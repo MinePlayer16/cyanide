@@ -10,6 +10,8 @@ checks, and controlled zone-trimming retries.
 Credit to rooootdev's [Lara](https://github.com/rooootdev/lara) for the working
 kexploit behavior used to stabilize this fork.
 
+Credit to [neonmodder123](https://github.com/neonmodder123) for the web respring method.
+
 Fork of `wh1te4ever/darksword-kexploit-fun` for iOS security research.
 
 Building some cool stuff utilizing kernel r/w exploit
