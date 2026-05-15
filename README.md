@@ -97,6 +97,7 @@ iOS/iPadOS 18.7.2 and 26.1. Later builds are outside this kernel exploit window.
 ## Credits
 
 - [`opa334`](https://github.com/opa334): original [`darksword-kexploit`](https://github.com/opa334/darksword-kexploit), ChOma, and XPF — the kernel r/w primitive Cyanide is built on.
+- [`wh1te4ever`](https://github.com/wh1te4ever): [`kfun` / `darksword-kexploit-fun`](https://github.com/wh1te4ever/darksword-kexploit-fun) — the RemoteCall implementation that lets a sideloaded app apply tweaks inside SpringBoard. Cyanide is a fork of this project.
 - [`rooootdev`](https://github.com/rooootdev): working kexploit behavior used to stabilize this fork.
 - [`neonmodder123`](https://github.com/neonmodder123): Web Respring method.
 - [`kolbicz`](https://github.com/kolbicz): OTA Disabler and SpringBoard tweaks.
