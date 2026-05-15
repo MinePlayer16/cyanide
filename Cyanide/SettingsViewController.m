@@ -406,6 +406,43 @@ static void settings_end_statbar_background_task_async(const char *reason)
     });
 }
 
+// Anchors background execution with an explicit UIBackgroundTask while a live
+// tweak loop (StatBar/RSSI/Axon Lite) needs to keep ticking. DSKeepAlive's
+// silent-audio assertion extends background time past iOS's default ~30s
+// budget, but without a real task UIKit deprioritizes the app's dispatch
+// queues on the *second* background→foreground→background cycle — which is
+// the regression where StatBar visibly stops refreshing in the status bar.
+// The expiration handler cleans up the task ID if iOS decides to revoke
+// background time anyway.
+static void settings_begin_statbar_background_task_async(const char *reason)
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        @synchronized (settings_bg_lock()) {
+            if (g_statbar_bg_task != UIBackgroundTaskInvalid) return;
+            UIApplication *app = [UIApplication sharedApplication];
+            UIBackgroundTaskIdentifier task = [app beginBackgroundTaskWithName:@"cyanide.statbar.live"
+                                                              expirationHandler:^{
+                @synchronized (settings_bg_lock()) {
+                    if (g_statbar_bg_task == UIBackgroundTaskInvalid) return;
+                    UIBackgroundTaskIdentifier expiring = g_statbar_bg_task;
+                    g_statbar_bg_task = UIBackgroundTaskInvalid;
+                    [[UIApplication sharedApplication] endBackgroundTask:expiring];
+                    printf("[SETTINGS] StatBar background task expired by iOS; live loop may pause\n");
+                }
+            }];
+            if (task == UIBackgroundTaskInvalid) {
+                printf("[SETTINGS] StatBar background task could not be acquired%s%s\n",
+                       reason ? ": " : "", reason ?: "");
+                return;
+            }
+            g_statbar_bg_task = task;
+            printf("[SETTINGS] StatBar background task acquired id=%lu%s%s\n",
+                   (unsigned long)task,
+                   reason ? ": " : "", reason ?: "");
+        }
+    });
+}
+
 static void settings_notify_remote_call_state_changed(void)
 {
     BOOL ready = (g_springboard_rc_ready != 0);
@@ -1321,6 +1358,15 @@ void settings_application_did_enter_background(void)
     if (settings_cleanup_in_progress()) return;
 
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    BOOL anyLiveLoopNeeded =
+        ([d boolForKey:kSettingsAxonLiteEnabled]    && g_springboard_rc_ready) ||
+        ([d boolForKey:kSettingsRSSIDisplayEnabled] && g_springboard_rc_ready) ||
+        ([d boolForKey:kSettingsStatBarEnabled]     && g_springboard_rc_ready &&
+         !statbar_resident_agent_active());
+    if (anyLiveLoopNeeded) {
+        settings_begin_statbar_background_task_async("entered background");
+    }
+
     if ([d boolForKey:kSettingsAxonLiteEnabled] && g_springboard_rc_ready) {
         settings_apply_axonlite_once_async("entered background");
     }

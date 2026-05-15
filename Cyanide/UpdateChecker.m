@@ -83,6 +83,8 @@ static int compare_versions(NSString *a, NSString *b)
         NSDictionary *release = obj;
         NSString *tag     = release[@"tag_name"];
         NSString *htmlURL = release[@"html_url"];
+        id bodyObj        = release[@"body"];
+        NSString *body    = [bodyObj isKindOfClass:NSString.class] ? (NSString *)bodyObj : nil;
         if (![tag isKindOfClass:NSString.class] || ![htmlURL isKindOfClass:NSString.class]) return;
 
         __strong typeof(weakSelf) self_ = weakSelf;
@@ -115,7 +117,8 @@ static int compare_versions(NSString *a, NSString *b)
             [self_ presentUpdateAlertFrom:presenter
                                    latest:latest
                                   current:current
-                                      url:htmlURL];
+                                      url:htmlURL
+                                    notes:body];
         });
     }];
     [task resume];
@@ -125,13 +128,37 @@ static int compare_versions(NSString *a, NSString *b)
                         latest:(NSString *)latest
                        current:(NSString *)current
                            url:(NSString *)urlString
+                         notes:(NSString *)notes
 {
     UIViewController *top = presenter;
     while (top.presentedViewController) top = top.presentedViewController;
 
-    NSString *message = [NSString stringWithFormat:
-        @"A new release of Cyanide is available.\n\nLatest: %@\nInstalled: %@\n\nUpdates ship as sideloadable IPAs on GitHub Releases.",
-        latest, current];
+    NSMutableString *message = [NSMutableString string];
+    [message appendFormat:@"A new release of Cyanide is available.\n\nLatest: %@\nInstalled: %@",
+                          latest, current];
+
+    NSString *trimmed = [notes stringByTrimmingCharactersInSet:
+                         [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (trimmed.length > 0) {
+        // UIAlertController plain-text view doesn't render markdown; strip the
+        // few markers that show up in our release notes so the body reads
+        // clean, then cap length so the alert stays scannable.
+        NSMutableString *clean = [trimmed mutableCopy];
+        [clean replaceOccurrencesOfString:@"\r\n" withString:@"\n"
+                                  options:0 range:NSMakeRange(0, clean.length)];
+        [clean replaceOccurrencesOfString:@"**"   withString:@""
+                                  options:0 range:NSMakeRange(0, clean.length)];
+        [clean replaceOccurrencesOfString:@"`"    withString:@""
+                                  options:0 range:NSMakeRange(0, clean.length)];
+        NSString *body = clean;
+        const NSUInteger kMaxNotesChars = 800;
+        if (body.length > kMaxNotesChars) {
+            body = [[body substringToIndex:kMaxNotesChars - 1] stringByAppendingString:@"…"];
+        }
+        [message appendFormat:@"\n\nWhat's new:\n%@", body];
+    } else {
+        [message appendString:@"\n\nUpdates ship as sideloadable IPAs on GitHub Releases."];
+    }
 
     UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Update Available"
                                                                 message:message
