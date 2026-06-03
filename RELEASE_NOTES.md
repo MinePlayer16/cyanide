@@ -16,6 +16,7 @@ Avoid vague bullets like "Update settings", "Change project files", or
 
 ## Pending
 
+- [ ] Added Drag Coefficient tweak — custom SpringBoard animation speed multiplier ported from kolbicz/DarkSword-Tweaks, with a 5–200% slider (50% = 2× faster, 100% = stock).
 
 ## Released
 

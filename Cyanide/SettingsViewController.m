@@ -12,6 +12,7 @@
 #import "tweaks/axonlite.h"
 #import "tweaks/private/typebanner.h"
 #import "tweaks/darksword_tweaks.h"
+#import "tweaks/darksword_drag.h"
 #import "tweaks/darksword_ota.h"
 #import "tweaks/darksword_layout.h"
 #import "tweaks/nano_registry.h"
@@ -147,6 +148,9 @@ NSString * const kSettingsDSDisableIconFlyIn  = @"DSDisableIconFlyIn";
 NSString * const kSettingsDSZeroWakeAnimation = @"DSZeroWakeAnimation";
 NSString * const kSettingsDSZeroBacklightFade = @"DSZeroBacklightFade";
 NSString * const kSettingsDSDoubleTapToLock   = @"DSDoubleTapToLock";
+
+NSString * const kSettingsDSDragCoefficientEnabled = @"DSDragCoefficientEnabled";
+NSString * const kSettingsDSDragCoefficientValue   = @"DSDragCoefficientValue";
 
 NSString * const kSettingsLayoutExtrasEnabled  = @"LayoutExtrasEnabled";
 NSString * const kSettingsLayoutHomeExtraLeft   = @"LayoutHomeExtraLeft";
@@ -602,6 +606,7 @@ static NSArray<NSString *> *settings_rc_backed_tweak_keys(void)
             kSettingsDSZeroWakeAnimation,
             kSettingsDSZeroBacklightFade,
             kSettingsDSDoubleTapToLock,
+            kSettingsDSDragCoefficientEnabled,
             kSettingsLayoutExtrasEnabled,
         ]];
         settings_each_springboard_cleanup_entry(^(const SettingsSpringBoardTweakCleanupEntry *entry) {
@@ -1706,6 +1711,7 @@ static BOOL settings_dark_tweaks_should_run(NSUserDefaults *d, BOOL pendingOnly)
         kSettingsDSZeroWakeAnimation,
         kSettingsDSZeroBacklightFade,
         kSettingsDSDoubleTapToLock,
+        kSettingsDSDragCoefficientEnabled,
     ];
     for (NSString *key in keys) {
         if (settings_enabled_tweak_should_run(d, key, pendingOnly)) return YES;
@@ -1720,6 +1726,7 @@ typedef struct {
     bool zeroWakeAnimation;
     bool zeroBacklightFade;
     bool doubleTapToLock;
+    bool dragCoefficient;
 } SettingsDarkTweaksResult;
 
 static bool settings_dark_tweaks_result_all_ok(SettingsDarkTweaksResult result)
@@ -1729,7 +1736,8 @@ static bool settings_dark_tweaks_result_all_ok(SettingsDarkTweaksResult result)
            result.disableIconFlyIn &&
            result.zeroWakeAnimation &&
            result.zeroBacklightFade &&
-           result.doubleTapToLock;
+           result.doubleTapToLock &&
+           result.dragCoefficient;
 }
 
 static SettingsDarkTweaksResult settings_apply_dark_tweaks_from_defaults_locked(NSUserDefaults *d)
@@ -1739,20 +1747,23 @@ static SettingsDarkTweaksResult settings_apply_dark_tweaks_from_defaults_locked(
     BOOL zeroWakeAnimation = [d boolForKey:kSettingsDSZeroWakeAnimation];
     BOOL zeroBacklightFade = [d boolForKey:kSettingsDSZeroBacklightFade];
     BOOL doubleTapToLock = [d boolForKey:kSettingsDSDoubleTapToLock];
+    BOOL dragCoefficientEnabled = [d boolForKey:kSettingsDSDragCoefficientEnabled];
     SettingsDarkTweaksResult result = {
         .disableAppLibrary = true,
         .disableIconFlyIn = true,
         .zeroWakeAnimation = true,
         .zeroBacklightFade = true,
         .doubleTapToLock = true,
+        .dragCoefficient = true,
     };
 
-    printf("[DST] apply appLib=%d flyIn=%d wake=%d backlight=%d dblTap=%d\n",
+    printf("[DST] apply appLib=%d flyIn=%d wake=%d backlight=%d dblTap=%d drag=%d\n",
            disableAppLibrary,
            disableIconFlyIn,
            zeroWakeAnimation,
            zeroBacklightFade,
-           doubleTapToLock);
+           doubleTapToLock,
+           dragCoefficientEnabled);
 
     if (disableAppLibrary) {
         result.any = true;
@@ -1773,6 +1784,12 @@ static SettingsDarkTweaksResult settings_apply_dark_tweaks_from_defaults_locked(
     if (doubleTapToLock) {
         result.any = true;
         result.doubleTapToLock = darksword_tweak_double_tap_to_lock_in_session();
+    }
+    if (dragCoefficientEnabled) {
+        result.any = true;
+        NSInteger stored = [d integerForKey:kSettingsDSDragCoefficientValue];
+        double coeff = (stored > 0) ? (double)stored / 100.0 : 0.5;
+        result.dragCoefficient = darksword_drag_coefficient_apply(coeff);
     }
     return result;
 }
@@ -3487,7 +3504,9 @@ static BOOL settings_key_is_dark_tweak(NSString *key)
            [key isEqualToString:kSettingsDSDisableIconFlyIn] ||
            [key isEqualToString:kSettingsDSZeroWakeAnimation] ||
            [key isEqualToString:kSettingsDSZeroBacklightFade] ||
-           [key isEqualToString:kSettingsDSDoubleTapToLock];
+           [key isEqualToString:kSettingsDSDoubleTapToLock] ||
+           [key isEqualToString:kSettingsDSDragCoefficientEnabled] ||
+           [key isEqualToString:kSettingsDSDragCoefficientValue];
 }
 
 static BOOL settings_key_affects_package_state(NSString *key)
@@ -3762,12 +3781,15 @@ static void settings_schedule_live_apply_for_key(NSString *key)
                     settings_mark_tweak_applied(kSettingsDSZeroBacklightFade, result.zeroBacklightFade);
                 if ([d boolForKey:kSettingsDSDoubleTapToLock])
                     settings_mark_tweak_applied(kSettingsDSDoubleTapToLock, result.doubleTapToLock);
-                printf("[SETTINGS] live DarkSword tweak results appLib=%d flyIn=%d wake=%d backlight=%d dblTap=%d all=%d\n",
+                if ([d boolForKey:kSettingsDSDragCoefficientEnabled])
+                    settings_mark_tweak_applied(kSettingsDSDragCoefficientEnabled, result.dragCoefficient);
+                printf("[SETTINGS] live DarkSword tweak results appLib=%d flyIn=%d wake=%d backlight=%d dblTap=%d drag=%d all=%d\n",
                        [d boolForKey:kSettingsDSDisableAppLibrary] ? result.disableAppLibrary : -1,
                        [d boolForKey:kSettingsDSDisableIconFlyIn] ? result.disableIconFlyIn : -1,
                        [d boolForKey:kSettingsDSZeroWakeAnimation] ? result.zeroWakeAnimation : -1,
                        [d boolForKey:kSettingsDSZeroBacklightFade] ? result.zeroBacklightFade : -1,
                        [d boolForKey:kSettingsDSDoubleTapToLock] ? result.doubleTapToLock : -1,
+                       [d boolForKey:kSettingsDSDragCoefficientEnabled] ? result.dragCoefficient : -1,
                        ok);
             }
             settings_notify_package_queue_changed_async();
@@ -3817,6 +3839,9 @@ void settings_register_defaults(void)
         kSettingsDSZeroWakeAnimation: @NO,
         kSettingsDSZeroBacklightFade: @NO,
         kSettingsDSDoubleTapToLock:   @NO,
+
+        kSettingsDSDragCoefficientEnabled: @NO,
+        kSettingsDSDragCoefficientValue:   @50,
 
         kSettingsLayoutExtrasEnabled:       @NO,
         kSettingsLayoutHomeExtraLeft:       @0,
@@ -4106,12 +4131,15 @@ static void settings_run_actions_internal(BOOL pendingOnly)
                             settings_mark_tweak_applied(kSettingsDSZeroBacklightFade, result.zeroBacklightFade);
                         if ([d boolForKey:kSettingsDSDoubleTapToLock])
                             settings_mark_tweak_applied(kSettingsDSDoubleTapToLock, result.doubleTapToLock);
-                        printf("[SETTINGS] DarkSword tweak results appLib=%d flyIn=%d wake=%d backlight=%d dblTap=%d all=%d\n",
+                        if ([d boolForKey:kSettingsDSDragCoefficientEnabled])
+                            settings_mark_tweak_applied(kSettingsDSDragCoefficientEnabled, result.dragCoefficient);
+                        printf("[SETTINGS] DarkSword tweak results appLib=%d flyIn=%d wake=%d backlight=%d dblTap=%d drag=%d all=%d\n",
                                [d boolForKey:kSettingsDSDisableAppLibrary] ? result.disableAppLibrary : -1,
                                [d boolForKey:kSettingsDSDisableIconFlyIn] ? result.disableIconFlyIn : -1,
                                [d boolForKey:kSettingsDSZeroWakeAnimation] ? result.zeroWakeAnimation : -1,
                                [d boolForKey:kSettingsDSZeroBacklightFade] ? result.zeroBacklightFade : -1,
                                [d boolForKey:kSettingsDSDoubleTapToLock] ? result.doubleTapToLock : -1,
+                               [d boolForKey:kSettingsDSDragCoefficientEnabled] ? result.dragCoefficient : -1,
                                ok);
                         log_user("%s DarkSword hooks %s.\n",
                                  ok ? "[OK]" : "[WARN]",
@@ -4352,6 +4380,7 @@ typedef NS_ENUM(NSInteger, SettingsSection) {
     SectionTypeBanner,
     SectionPowercuff,
     SectionDarkSwordTweaks,
+    SectionDragCoefficient,
     SectionLayoutExtras,
     SectionNanoRegistry,
     SectionThemer,
@@ -5062,6 +5091,18 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
     return @[];
 }
 
+- (NSArray<NSDictionary *> *)dragCoefficientRows
+{
+    return @[
+        @{ @"kind": @"slider",
+           @"key": kSettingsDSDragCoefficientValue,
+           @"title": @"Coefficient",
+           @"subtitle": @"% of stock speed — 100 = default, 50 = 2× faster, 25 = 4× faster",
+           @"min": @5, @"max": @200, @"step": @5,
+           @"unit": @"%", @"default": @50 },
+    ];
+}
+
 - (NSArray<NSDictionary *> *)layoutExtrasRows
 {
     return @[
@@ -5282,6 +5323,9 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
     } else if (section == SectionPowercuff) {
         NSString *lvl = [d stringForKey:kSettingsPowercuffLevel] ?: @"nominal";
         [out addObject:@{@"title": @"Level", @"value": lvl}];
+    } else if (section == SectionDragCoefficient) {
+        NSInteger v = [d integerForKey:kSettingsDSDragCoefficientValue];
+        [out addObject:@{@"title": @"Coefficient", @"value": [NSString stringWithFormat:@"%ld%%", (long)v]}];
     } else if (section == SectionNanoRegistry) {
         [out addObject:@{@"title": @"watchOS limit",      @"value": [@([d integerForKey:kSettingsNanoMaxPairing])       stringValue]}];
         [out addObject:@{@"title": @"Setup floor",        @"value": [@([d integerForKey:kSettingsNanoMinPairing])       stringValue]}];
@@ -5308,6 +5352,7 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
         case SectionLaunch:    return self.launchRows;
         case SectionSBC:       return self.sbcRows;
         case SectionDarkSwordTweaks: return self.darkSwordTweakRows;
+        case SectionDragCoefficient: return self.dragCoefficientRows;
         case SectionLayoutExtras: return self.layoutExtrasRows;
         case SectionOTA:       return self.otaRows;
         case SectionNanoRegistry: return self.nanoRegistryRows;
@@ -5343,6 +5388,7 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
         @{ @"title": @"Cyanide Themer",     @"icon": @"paintpalette.fill",                   @"color": [UIColor systemPinkColor],   @"section": @(SectionThemer) },
         @{ @"title": @"Powercuff",          @"icon": @"bolt.slash.fill",                     @"color": [UIColor systemOrangeColor], @"section": @(SectionPowercuff) },
         @{ @"title": @"SpringBoard Tweaks", @"icon": @"apps.iphone",                         @"color": [UIColor systemIndigoColor], @"section": @(SectionDarkSwordTweaks) },
+        @{ @"title": @"Drag Coefficient",   @"icon": @"dial.medium.fill",                    @"color": [UIColor systemIndigoColor], @"section": @(SectionDragCoefficient) },
         @{ @"title": @"Home Layout Extras", @"icon": @"square.dashed.inset.filled",          @"color": [UIColor systemPurpleColor], @"section": @(SectionLayoutExtras) },
     ];
 }
@@ -5495,6 +5541,9 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
     }
     if (s == SectionDarkSwordTweaks) {
         return @"Imported from DarkSword-Tweaks. These are SpringBoard runtime patches; turning one off only skips future applies.";
+    }
+    if (s == SectionDragCoefficient) {
+        return @"Overrides _UIAnimationDragCoefficient in SpringBoard. 50% = 2× faster (value 0.5), 25% = 4× faster (value 0.25), 100% = stock. Imported from kolbicz/DarkSword-Tweaks.";
     }
     if (s == SectionLayoutExtras) {
         NSInteger major = [[NSProcessInfo processInfo] operatingSystemVersion].majorVersion;

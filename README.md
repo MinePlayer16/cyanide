@@ -74,6 +74,10 @@ Ported from [`kolbicz/DarkSword-Tweaks`](https://github.com/kolbicz/DarkSword-Tw
 
 > ⚠︎ Work in progress — these work but may change or need re-applying between builds.
 
+- **Gravity Lite**: core port of Julio Verne's classic Gravity tweak. Applies
+  UIDynamicAnimator physics to home-screen and dock icons — gravity, collisions,
+  bounce, friction, accelerometer steering, shake pulses, and an explosion
+  button. Use Restore Icon Layout if icons stay displaced after deactivating.
 - **Axon Lite**: groups Notification Center requests by app with a SpringBoard
   overlay and dedups duplicates while the RemoteCall session is alive.
 - **Cyanide Themer**: per-bundle icon theme engine. Walks SpringBoard's
@@ -166,6 +170,7 @@ iOS/iPadOS 18.7.2 and 26.1. Later builds are outside this kernel exploit window.
 - `@Little_34306`: credited by the original call-recording projects for the
   Disable Call Recording concept.
 - [`rpetrich`](https://github.com/rpetrich): Powercuff.
+- [Julio Verne](https://github.com/julioverne): the original [Gravity](https://github.com/julioverne/Gravity) tweak that Gravity Lite is a core port of.
 - [`tomt000`](https://github.com/tomt000): [Dynamic Stage](https://havoc.app/package/dynamicstage) — the original Stage Manager-for-iPhone tweak whose split-view + scene-hosting design Dynamic Stage Lite re-implements over RemoteCall.
 
 ### UI inspiration
