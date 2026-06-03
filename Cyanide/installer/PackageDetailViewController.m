@@ -118,7 +118,7 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
     PackageQueueIntent intent = [[PackageQueue sharedQueue] intentForPackage:self.package];
     if (intent == PackageQueueIntentInstall) return @"Activation Pending";
     if (intent == PackageQueueIntentUninstall) return @"Deactivation Pending";
-    if (self.package.isInstalled) return @"Active";
+    if (self.package.isInstalled) return @"Installed";
     return @"Inactive";
 }
 

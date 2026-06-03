@@ -582,7 +582,7 @@ static NSString * const kTipsExpandedDefault    = @"installer.tipsExpanded";
                         textColor:color];
     }
     if (pkg.isInstalled) {
-        return [self pillWithText:@"ACTIVE"
+        return [self pillWithText:@"INSTALLED"
                        background:[UIColor colorWithRed:0.16 green:0.55 blue:0.32 alpha:0.18]
                         textColor:[UIColor systemGreenColor]];
     }

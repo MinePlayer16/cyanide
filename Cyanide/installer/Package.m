@@ -45,12 +45,8 @@
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     switch (self.kind) {
         case PackageInstallKindToggle:
-            // "Installed" means live in the current RemoteCall session.
-            // A persisted install intent that has not been re-applied yet is
-            // shown as activation-pending instead.
             if (!self.enabledKey) return NO;
-            if (![d boolForKey:self.enabledKey]) return NO;
-            return settings_tweak_is_applied(self.enabledKey);
+            return [d boolForKey:self.enabledKey];
         case PackageInstallKindOTA:
         case PackageInstallKindNanoRegistry:
         case PackageInstallKindCallRecordingSound:
@@ -67,8 +63,7 @@
 {
     if (self.kind != PackageInstallKindToggle || !self.enabledKey) return NO;
     if (self.isInstallDisabled) return NO;
-    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-    return [d boolForKey:self.enabledKey] && !settings_tweak_is_applied(self.enabledKey);
+    return NO;
 }
 
 - (BOOL)isInstallDisabled

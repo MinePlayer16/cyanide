@@ -526,17 +526,32 @@ static double statbar_fallback_top_area_for_screen(double screenWidth, double sc
     return 20.0;
 }
 
-static StatBarLayoutMetrics statbar_read_layout_metrics(void)
+static uint64_t statbar_read_springboard_interface_orientation(uint64_t win)
+{
+    if (!r_is_objc_ptr(win)) return 0;
+    uint64_t scene = r_msg2_main(win, "windowScene", 0, 0, 0, 0);
+    if (!r_is_objc_ptr(scene)) return 0;
+    return r_msg2_main(scene, "interfaceOrientation", 0, 0, 0, 0);
+}
+
+static StatBarLayoutMetrics statbar_read_layout_metrics(uint64_t win)
 {
     StatBarLayoutMetrics m = { kStatBarFallbackScreenWidth, 0.0, 0.0 };
 
     CGRect bounds = UIScreen.mainScreen.bounds;
-    if (statbar_valid_screen_length(bounds.size.width)) {
-        m.screenWidth = bounds.size.width;
+    double w = bounds.size.width;
+    double h = bounds.size.height;
+
+    uint64_t orientation = r_is_objc_ptr(win)
+        ? statbar_read_springboard_interface_orientation(win) : 0;
+    bool landscape = (orientation == 3 || orientation == 4);
+    if (landscape) {
+        w = fmax(bounds.size.width, bounds.size.height);
+        h = fmin(bounds.size.width, bounds.size.height);
     }
-    if (statbar_valid_screen_length(bounds.size.height)) {
-        m.screenHeight = bounds.size.height;
-    }
+
+    if (statbar_valid_screen_length(w)) m.screenWidth = w;
+    if (statbar_valid_screen_length(h)) m.screenHeight = h;
 
     m.topAreaHeight = statbar_fallback_top_area_for_screen(m.screenWidth, m.screenHeight);
     return m;
@@ -641,7 +656,7 @@ static bool statbar_apply_overlay_layout(uint64_t win, uint64_t label,
 {
     if (!r_is_objc_ptr(win)) return false;
 
-    StatBarLayoutMetrics metrics = statbar_read_layout_metrics();
+    StatBarLayoutMetrics metrics = statbar_read_layout_metrics(win);
     double screenWidth = statbar_valid_screen_length(metrics.screenWidth) ?
                          metrics.screenWidth : kStatBarFallbackScreenWidth;
     double maxWidth = fmax(1.0, screenWidth - (kStatBarScreenSideMargin * 2.0));

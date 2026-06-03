@@ -19,6 +19,12 @@ Avoid vague bullets like "Update settings", "Change project files", or
 
 ## Released
 
+### v1.2.3 - 2026-06-03
+
+- [x] Improved Gravity Lite startup on iOS 17 by using the faster live-icon capture path.
+- [x] Fixed a recent tweak startup regression that could hang while opening the SpringBoard injection channel on A16+ iPhones.
+- [x] Fixed Installer package state so successfully applied SpringBoard tweaks no longer appear stuck as activation pending.
+
 ### v1.2.2 - 2026-06-03
 
 - [x] Fixed kernel panic on A16+/M-series iPads by guarding the t1sz_boot override so the PAC mask uses the correct value.

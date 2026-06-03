@@ -12,7 +12,7 @@
 typedef NS_ENUM(NSInteger, QueueReviewSection) {
     QueueReviewSectionInstall = 0,
     QueueReviewSectionUninstall,
-    QueueReviewSectionReApply,   // packages already installed that will re-run on confirm
+    QueueReviewSectionReApply,
     QueueReviewSectionCount,
 };
 
@@ -238,7 +238,7 @@ typedef NS_ENUM(NSInteger, QueueReviewSection) {
 {
     if ((QueueReviewSection)section != QueueReviewSectionReApply) return nil;
     if ([self reApplyPackages].count == 0) return nil;
-    return @"These are already active, not new pending changes. Confirming re-runs the chain so RemoteCall-backed tweaks come back after a force-quit. To stop one from running, deactivate it from the Installer tab, or use Reset All Packages in Settings → Quick Actions.";
+    return @"These are already installed, not new pending changes. Confirming re-runs the chain so RemoteCall-backed tweaks come back after a force-quit. To stop one from running, deactivate it from the Installer tab, or use Reset All Packages in Settings → Quick Actions.";
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
