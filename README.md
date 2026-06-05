@@ -186,7 +186,7 @@ iOS/iPadOS 18.7.2 and 26.1. Later builds are outside this kernel exploit window.
   Disable Call Recording concept.
 - [`rpetrich`](https://github.com/rpetrich): Powercuff.
 - [Julio Verne](https://github.com/julioverne): the original [Gravity](https://github.com/julioverne/Gravity) tweak that Gravity Lite is a core port of.
-- [`d1y`](https://github.com/d1y): [`cyanide-ios`](https://github.com/d1y/cyanide-ios)
+- [`d1y`](https://x.com/chenhonzhou): [`cyanide-ios`](https://github.com/d1y/cyanide-ios)
   AGPL-3.0 sources used for the NSBar, NiceBar Lite, SnowBoard Lite, and
   LiveWP ports.
 - [`tomt000`](https://github.com/tomt000): [Dynamic Stage](https://havoc.app/package/dynamicstage) — the original Stage Manager-for-iPhone tweak whose split-view + scene-hosting design Dynamic Stage Lite re-implements over RemoteCall.
