@@ -14,6 +14,7 @@ static const CGFloat kPopupPadding = 2.0;
 
 @interface MainTabBarController ()
 @property (nonatomic, strong) QueuePopupBar *popupBar;
+@property (nonatomic, copy) NSArray<NSLayoutConstraint *> *popupBarConstraints;
 @end
 
 @implementation MainTabBarController
@@ -28,12 +29,7 @@ static const CGFloat kPopupPadding = 2.0;
     self.popupBar.onTap = ^{ [weakSelf showQueueReview]; };
     [self.view addSubview:self.popupBar];
 
-    [NSLayoutConstraint activateConstraints:@[
-        [self.popupBar.leadingAnchor  constraintEqualToAnchor:self.view.leadingAnchor  constant:12.0],
-        [self.popupBar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-12.0],
-        [self.popupBar.bottomAnchor   constraintEqualToAnchor:self.tabBar.topAnchor constant:-kPopupGap],
-        [self.popupBar.heightAnchor   constraintEqualToConstant:kPopupHeight],
-    ]];
+    [self installPopupBarConstraintsIfReady];
 
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(queueDidChange:)
@@ -41,9 +37,43 @@ static const CGFloat kPopupPadding = 2.0;
                                                object:nil];
 }
 
+- (void)viewDidLayoutSubviews
+{
+    [super viewDidLayoutSubviews];
+    [self installPopupBarConstraintsIfReady];
+}
+
 - (void)dealloc
 {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (BOOL)view:(UIView *)view sharesHierarchyWithView:(UIView *)otherView
+{
+    if (!view || !otherView) return NO;
+    for (UIView *ancestor = view; ancestor; ancestor = ancestor.superview) {
+        if ([otherView isDescendantOfView:ancestor]) return YES;
+    }
+    return NO;
+}
+
+- (void)installPopupBarConstraintsIfReady
+{
+    if (self.popupBarConstraints.count > 0) return;
+
+    NSLayoutYAxisAnchor *bottomAnchor = self.view.safeAreaLayoutGuide.bottomAnchor;
+    CGFloat bottomConstant = -kPopupGap;
+    if ([self view:self.popupBar sharesHierarchyWithView:self.tabBar]) {
+        bottomAnchor = self.tabBar.topAnchor;
+    }
+
+    self.popupBarConstraints = @[
+        [self.popupBar.leadingAnchor  constraintEqualToAnchor:self.view.leadingAnchor  constant:12.0],
+        [self.popupBar.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-12.0],
+        [self.popupBar.bottomAnchor   constraintEqualToAnchor:bottomAnchor constant:bottomConstant],
+        [self.popupBar.heightAnchor   constraintEqualToConstant:kPopupHeight],
+    ];
+    [NSLayoutConstraint activateConstraints:self.popupBarConstraints];
 }
 
 - (void)viewWillAppear:(BOOL)animated

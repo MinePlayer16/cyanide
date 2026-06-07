@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build Cyanide for iphoneos and package the resulting .app into a versioned IPA
 # under build/, e.g. build/Cyanide-1.0.14.ipa, with a build/Cyanide.ipa
-# symlink pointing at the latest build.
+# symlink pointing at the latest build. With SDK=iphonesimulator, build the
+# simulator .app and skip IPA packaging.
 #
 # Run as: ./scripts/build.sh
 # Override defaults with env vars:
@@ -26,6 +27,11 @@ DERIVED="$PWD/build/DerivedData"
 PRODUCT_DIR="$DERIVED/Build/Products/${CONFIG}-${SDK}"
 APP_NAME="Cyanide.app"
 IPA_LATEST="$PWD/build/Cyanide.ipa"
+XCODEBUILD_EXTRA=()
+
+if [ "$SDK" = "iphonesimulator" ]; then
+    XCODEBUILD_EXTRA=(ARCHS=arm64 ONLY_ACTIVE_ARCH=YES)
+fi
 
 mkdir -p build
 
@@ -37,6 +43,7 @@ xcodebuild \
     -configuration "$CONFIG" \
     -derivedDataPath "$DERIVED" \
     CODE_SIGNING_ALLOWED=NO \
+    "${XCODEBUILD_EXTRA[@]}" \
     build \
     | xcbeautify --quiet 2>/dev/null \
     || xcodebuild \
@@ -46,12 +53,18 @@ xcodebuild \
          -configuration "$CONFIG" \
          -derivedDataPath "$DERIVED" \
          CODE_SIGNING_ALLOWED=NO \
+         "${XCODEBUILD_EXTRA[@]}" \
          build
 
 APP_PATH="$PRODUCT_DIR/$APP_NAME"
 if [ ! -d "$APP_PATH" ]; then
     echo "error: $APP_PATH not found after build" >&2
     exit 1
+fi
+
+if [ "$SDK" = "iphonesimulator" ]; then
+    echo "==> simulator app $APP_PATH"
+    exit 0
 fi
 
 VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP_PATH/Info.plist" 2>/dev/null || true)

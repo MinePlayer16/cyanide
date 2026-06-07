@@ -295,24 +295,26 @@ static NSString *format_net_slot(double kbValue)
     return pad_left_visual(token, 6);
 }
 
-static NSString *build_text(bool celsius, bool showNet, bool showCPU, bool showLabels)
+static NSString *build_text(bool celsius, bool showNet, bool showCPU, bool showLabels, bool networkOnly)
 {
     NSMutableArray<NSString *> *parts = [NSMutableArray array];
 
     // Slot order: temp -> cpu -> ram -> net. `showNet` controls whether the
     // wider (260+) layout is used; in that mode, numbers are visually padded
     // to keep columns aligned as digits change.
-    double tempC = read_battery_temp_c();
-    if (tempC > 0) {
-        double v = celsius ? tempC : (tempC * 9.0 / 5.0 + 32.0);
-        NSString *num = [NSString stringWithFormat:@"%.2f", v];
-        NSString *displayNum = showNet ? pad_left_visual(num, 6) : num;
-        [parts addObject:[NSString stringWithFormat:@"%@\u00B0%c",
-                          displayNum, celsius ? 'C' : 'F']];
-    } else if (statbar_should_log_tick()) {
-        printf("[STATBAR] temp unavailable this tick\n");
+    if (!networkOnly) {
+        double tempC = read_battery_temp_c();
+        if (tempC > 0) {
+            double v = celsius ? tempC : (tempC * 9.0 / 5.0 + 32.0);
+            NSString *num = [NSString stringWithFormat:@"%.2f", v];
+            NSString *displayNum = showNet ? pad_left_visual(num, 6) : num;
+            [parts addObject:[NSString stringWithFormat:@"%@\u00B0%c",
+                              displayNum, celsius ? 'C' : 'F']];
+        } else if (statbar_should_log_tick()) {
+            printf("[STATBAR] temp unavailable this tick\n");
+        }
     }
-    if (showCPU) {
+    if (!networkOnly && showCPU) {
         double pct = read_cpu_percent();
         NSString *num = (pct >= 0.0)
             ? [NSString stringWithFormat:@"%.0f", pct]
@@ -321,17 +323,19 @@ static NSString *build_text(bool celsius, bool showNet, bool showCPU, bool showL
         [parts addObject:[NSString stringWithFormat:@"%@%%%@", displayNum,
                           showLabels ? @" CPU" : @""]];
     }
-    double freeGB = read_free_ram_gb();
-    if (freeGB > 0) {
-        NSString *suffix = showLabels ? @" RAM" : @"";
-        if (freeGB < 1.0) {
-            NSString *num = [NSString stringWithFormat:@"%.2f", freeGB * 1024.0];
-            NSString *displayNum = showNet ? pad_left_visual(num, 6) : num;
-            [parts addObject:[NSString stringWithFormat:@"%@MB%@", displayNum, suffix]];
-        } else {
-            NSString *num = [NSString stringWithFormat:@"%.2f", freeGB];
-            NSString *displayNum = showNet ? pad_left_visual(num, 6) : num;
-            [parts addObject:[NSString stringWithFormat:@"%@GB%@", displayNum, suffix]];
+    if (!networkOnly) {
+        double freeGB = read_free_ram_gb();
+        if (freeGB > 0) {
+            NSString *suffix = showLabels ? @" RAM" : @"";
+            if (freeGB < 1.0) {
+                NSString *num = [NSString stringWithFormat:@"%.2f", freeGB * 1024.0];
+                NSString *displayNum = showNet ? pad_left_visual(num, 6) : num;
+                [parts addObject:[NSString stringWithFormat:@"%@MB%@", displayNum, suffix]];
+            } else {
+                NSString *num = [NSString stringWithFormat:@"%.2f", freeGB];
+                NSString *displayNum = showNet ? pad_left_visual(num, 6) : num;
+                [parts addObject:[NSString stringWithFormat:@"%@GB%@", displayNum, suffix]];
+            }
         }
     }
     if (showNet) {
@@ -547,11 +551,31 @@ static StatBarLayoutMetrics statbar_read_layout_metrics(uint64_t win)
     CGRect bounds = UIScreen.mainScreen.bounds;
     double w = bounds.size.width;
     double h = bounds.size.height;
+    bool readRemoteBounds = false;
 
-    uint64_t orientation = r_is_objc_ptr(win)
-        ? statbar_read_springboard_interface_orientation(win) : 0;
-    bool landscape = (orientation == 3 || orientation == 4);
-    if (landscape) {
+    if (r_is_objc_ptr(win)) {
+        RCGRect64 remoteBounds = {0};
+        if (r_msg2_main_struct_ret(win, "bounds",
+                                   &remoteBounds, sizeof(remoteBounds),
+                                   NULL, 0, NULL, 0, NULL, 0, NULL, 0)) {
+            double rw = fabs(remoteBounds.width);
+            double rh = fabs(remoteBounds.height);
+            if (statbar_valid_screen_length(rw) && statbar_valid_screen_length(rh)) {
+                w = rw;
+                h = rh;
+                readRemoteBounds = true;
+            }
+        }
+    }
+
+    uint64_t orientation = 0;
+    bool landscape = false;
+    if (!readRemoteBounds) {
+        orientation = r_is_objc_ptr(win)
+            ? statbar_read_springboard_interface_orientation(win) : 0;
+        landscape = (orientation == 3 || orientation == 4);
+    }
+    if (!readRemoteBounds && landscape) {
         w = fmax(bounds.size.width, bounds.size.height);
         h = fmin(bounds.size.width, bounds.size.height);
     }
@@ -887,26 +911,29 @@ recurse: {
     }
 }
 
-bool statbar_apply_in_session(bool celsius, bool showNet, bool showCPU, bool showLabels)
+bool statbar_apply_in_session(bool celsius, bool showNet, bool showCPU, bool showLabels, bool networkOnly)
 {
     gStatBarApplyTick++;
-    NSString *text = build_text(celsius, showNet, showCPU, showLabels);
+    bool effectiveShowNet = showNet || networkOnly;
+    bool effectiveShowCPU = networkOnly ? false : showCPU;
+    bool effectiveShowLabels = networkOnly ? false : showLabels;
+    NSString *text = build_text(celsius, effectiveShowNet, effectiveShowCPU, effectiveShowLabels, networkOnly);
     if (statbar_should_log_tick()) {
-        printf("[STATBAR] === entry === text='%s' celsius=%d showNet=%d showCPU=%d showLabels=%d tick=%llu\n",
-               text.UTF8String, celsius, showNet, showCPU, showLabels, gStatBarApplyTick);
+        printf("[STATBAR] === entry === text='%s' celsius=%d showNet=%d showCPU=%d showLabels=%d networkOnly=%d tick=%llu\n",
+               text.UTF8String, celsius, showNet, showCPU, showLabels, networkOnly, gStatBarApplyTick);
     }
 
-    return statbar_install_overlay(text, showNet, showCPU, showLabels);
+    return statbar_install_overlay(text, effectiveShowNet, effectiveShowCPU, effectiveShowLabels);
 }
 
-bool statbar_apply(bool celsius, bool showNet, bool showCPU, bool showLabels)
+bool statbar_apply(bool celsius, bool showNet, bool showCPU, bool showLabels, bool networkOnly)
 {
     if (init_remote_call("SpringBoard", false) != 0) {
         printf("[STATBAR] init_remote_call(SpringBoard) failed\n");
         return false;
     }
 
-    bool ok = statbar_apply_in_session(celsius, showNet, showCPU, showLabels);
+    bool ok = statbar_apply_in_session(celsius, showNet, showCPU, showLabels, networkOnly);
     destroy_remote_call();
     return ok;
 }

@@ -5,6 +5,7 @@ CHOMA_PATH       ?= external/ChOma
 CFLAGS            = -O2 -framework Foundation -I$(CHOMA_PATH)/include
 CFLAGS_MACOS      = $(CFLAGS)
 CFLAGS_IOS        = $(CFLAGS) -isysroot $(shell xcrun --sdk iphoneos --show-sdk-path) -miphoneos-version-min=15.0 -arch arm64 -arch arm64e
+CFLAGS_IOSSIM     = $(CFLAGS) -isysroot $(shell xcrun --sdk iphonesimulator --show-sdk-path) -mios-simulator-version-min=17.0 -arch arm64
 LDFLAGS           = -lcompression
 
 all: output/macos/libxpf.dylib output/ios/libxpf.dylib output/macos/xpf_test output/ios/xpf_test
@@ -24,6 +25,10 @@ output/ios/libxpf.dylib: $(wildcard src/*.c) $(CHOMA_DEP)
 	@mkdir -p $(shell dirname $@)
 	$(CC) $(CFLAGS_IOS) $(LDFLAGS) -dynamiclib -install_name @loader_path/libxpf.dylib -o $@ $^
 	ldid -S $@
+
+output/iphonesimulator/libxpf.dylib: $(wildcard src/*.c) $(CHOMA_DEP)
+	@mkdir -p $(shell dirname $@)
+	$(CC) $(CFLAGS_IOSSIM) $(LDFLAGS) -dynamiclib -install_name @loader_path/libxpf.dylib -o $@ $^
 
 output/macos/xpf_test: $(wildcard src/cli/*.c)
 	@mkdir -p $(shell dirname $@)

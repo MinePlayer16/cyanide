@@ -2290,6 +2290,7 @@ bool themer_apply_in_session(const char *themePath)
 
     NSArray<NSString *> *files = [fm contentsOfDirectoryAtPath:themeDir error:NULL];
     NSMutableDictionary<NSString *, NSString *> *pathByBundle = [NSMutableDictionary dictionary];
+    NSMutableSet<NSString *> *explicitFileBundles = [NSMutableSet set];
     NSMutableSet<NSString *> *appleSystemBundles = [NSMutableSet set];
     NSMutableSet<NSString *> *aliasTargetBundles = [NSMutableSet set];
     NSUInteger availableCount = 0;
@@ -2300,6 +2301,7 @@ bool themer_apply_in_session(const char *themePath)
         NSString *bundle = f.stringByDeletingPathExtension;
         NSString *path = [themeDir stringByAppendingPathComponent:f];
         pathByBundle[bundle] = path;
+        if (bundle.length > 0) [explicitFileBundles addObject:bundle];
         if ([bundle.lowercaseString hasPrefix:@"com.apple."]) {
             [appleSystemBundles addObject:bundle];
         }
@@ -2339,6 +2341,9 @@ bool themer_apply_in_session(const char *themePath)
     printf("[THEMER] visible bundles count=%lu list=%s\n",
            (unsigned long)visible.count,
            themer_join_strings_for_log(visible, 160).UTF8String);
+    printf("[THEMER] explicit file bundles count=%lu list=%s\n",
+           (unsigned long)explicitFileBundles.count,
+           themer_join_strings_for_log(explicitFileBundles, 200).UTF8String);
     printf("[THEMER] apple-system bundles count=%lu list=%s\n",
            (unsigned long)appleSystemBundles.count,
            themer_join_strings_for_log(appleSystemBundles, 200).UTF8String);
@@ -2346,9 +2351,18 @@ bool themer_apply_in_session(const char *themePath)
            (unsigned long)aliasTargetBundles.count,
            themer_join_strings_for_log(aliasTargetBundles, 240).UTF8String);
     NSMutableSet<NSString *> *targetBundles = [visible mutableCopy];
+    NSUInteger explicitAdded = 0;
     NSUInteger priorityAdded = 0;
     NSUInteger appleAdded = 0;
     NSUInteger aliasAdded = 0;
+    for (NSString *bid in explicitFileBundles) {
+        if (![bid isKindOfClass:NSString.class] || bid.length == 0) continue;
+        if ([targetBundles containsObject:bid]) continue;
+        if (themer_theme_path_for_bundle(pathByBundle, bid)) {
+            [targetBundles addObject:bid];
+            explicitAdded++;
+        }
+    }
     for (NSString *bid in appleSystemBundles) {
         if (![bid isKindOfClass:NSString.class] || bid.length == 0) continue;
         if ([targetBundles containsObject:bid]) continue;
@@ -2394,10 +2408,11 @@ bool themer_apply_in_session(const char *themePath)
     printf("[THEMER] matched bundles count=%lu list=%s\n",
            (unsigned long)matchedBundles.count,
            themer_join_strings_for_log(matchedBundles, 240).UTF8String);
-    printf("[THEMER] apply loaded=%lu matched of %lu target (%lu visible + %lu apple + %lu alias + %lu priority), %lu available caseFallbacks=%lu\n",
+    printf("[THEMER] apply loaded=%lu matched of %lu target (%lu visible + %lu explicit + %lu apple + %lu alias + %lu priority), %lu available caseFallbacks=%lu\n",
            (unsigned long)dict.count,
            (unsigned long)targetBundles.count,
            (unsigned long)visible.count,
+           (unsigned long)explicitAdded,
            (unsigned long)appleAdded,
            (unsigned long)aliasAdded,
            (unsigned long)priorityAdded,

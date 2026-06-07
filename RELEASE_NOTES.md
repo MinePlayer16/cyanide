@@ -19,6 +19,15 @@ Avoid vague bullets like "Update settings", "Change project files", or
 
 ## Released
 
+### v1.2.11 - 2026-06-07
+
+- [x] Added an optional simulator build path that uses a simulator XPF dylib without changing the normal device IPA build.
+- [x] Added a StatBar option to show only live network upload and download speed.
+- [x] Fixed the installer queue popup crash on iPadOS when the tab bar is attached after launch.
+- [x] Fixed StatBar landscape placement on iPad by sizing the overlay from SpringBoard's active window bounds.
+- [x] Fixed custom theme bundle-ID PNGs not preloading for apps that are only visible inside folders.
+- [x] Prevented Dynamic Stage Lite and Cyanide Themer live icon repair from running together to avoid SpringBoard resprings.
+
 ### v1.2.10 - 2026-06-05
 
 - [x] Updated the Cyanide Signal group invite link.

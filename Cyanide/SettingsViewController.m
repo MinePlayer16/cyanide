@@ -168,6 +168,7 @@ NSString * const kSettingsStatBarCelsius = @"StatBarCelsius";
 NSString * const kSettingsStatBarShowNet = @"StatBarShowNet";
 NSString * const kSettingsStatBarShowCPU = @"StatBarShowCPU";
 NSString * const kSettingsStatBarShowLabels = @"StatBarShowLabels";
+NSString * const kSettingsStatBarNetworkOnly = @"StatBarNetworkOnly";
 NSString * const kSettingsStatBarRefreshRateSec = @"StatBarRefreshRateSec";
 
 NSString * const kSettingsNSBarEnabled = @"NSBarEnabled";
@@ -290,6 +291,7 @@ static volatile int g_themer_live_running = 0;
 static volatile int g_themer_live_stop_requested = 0;
 static volatile int g_themer_repair_running = 0;
 static volatile uint64_t g_themer_repair_generation = 0;
+static volatile int g_themer_stage_suppression_logged = 0;
 static volatile int g_livewp_live_running = 0;
 static volatile int g_livewp_live_stop_requested = 0;
 
@@ -817,6 +819,23 @@ static BOOL settings_typebanner_install_allowed(void)
 static BOOL settings_stagestrip_install_allowed(void)
 {
     return cyanide_private_tweaks_available() && settings_experimental_tweaks_enabled();
+}
+
+static BOOL settings_themer_dynamic_updates_blocked_by_stage(NSUserDefaults *d)
+{
+    if (!settings_stagestrip_install_allowed()) return NO;
+    if (![d boolForKey:kSettingsStageStripEnabled]) return NO;
+    return [d boolForKey:kSettingsThemerEnabled] ||
+           [d boolForKey:kSettingsSnowBoardLiteEnabled];
+}
+
+static void settings_note_themer_stage_conflict(BOOL userVisible)
+{
+    g_themer_live_stop_requested = 1;
+    printf("[SETTINGS] Themer live icon repair paused while Dynamic Stage Lite is enabled\n");
+    if (userVisible && __sync_bool_compare_and_swap(&g_themer_stage_suppression_logged, 0, 1)) {
+        log_user("[COMPAT] Dynamic Stage Lite is enabled, so Cyanide Themer live icon repair is paused to avoid SpringBoard resprings. The selected theme still applies once; live repair resumes after Dynamic Stage is disabled.\n");
+    }
 }
 
 static BOOL settings_location_sim_install_allowed(void)
@@ -2524,7 +2543,7 @@ static bool settings_apply_ota_disabled_body(BOOL disable)
 {
     if (!settings_ensure_kexploit()) {
         printf("[OTA] kernel primitives were not acquired\n");
-        log_user("[OTA] Failed: kernel primitives were not acquired.\n");
+        log_user("[OTA] Failed: kernel primitives were not acquired. Please try running chain again.\n");
         return false;
     }
 
@@ -2607,7 +2626,7 @@ static void settings_nano_load_from_plist_into_defaults(BOOL logResult)
 BOOL settings_apply_nano_registry_now(BOOL apply)
 {
     if (!settings_ensure_kexploit()) {
-        log_user("[NANO] Failed: kernel primitives were not acquired.\n");
+        log_user("[NANO] Failed: kernel primitives were not acquired. Please try running chain again.\n");
         return NO;
     }
 
@@ -2658,7 +2677,7 @@ BOOL settings_apply_call_recording_sound_disabled(BOOL disabled)
         return NO;
     }
     if (!settings_ensure_kexploit()) {
-        log_user("[CALLREC] Failed: kernel primitives were not acquired.\n");
+        log_user("[CALLREC] Failed: kernel primitives were not acquired. Please try running chain again.\n");
         return NO;
     }
     return call_recording_sound_set_disabled(disabled) ? YES : NO;
@@ -2692,7 +2711,7 @@ static void settings_run_nano_probe_action(void)
 {
     dispatch_async(dispatch_get_global_queue(0, 0), ^{
         if (!settings_ensure_kexploit()) {
-            log_user("[NANO-PROBE] Failed: kernel primitives were not acquired.\n");
+            log_user("[NANO-PROBE] Failed: kernel primitives were not acquired. Please try running chain again.\n");
         } else {
             (void)nano_registry_probe_pairing_assets();
         }
@@ -2708,7 +2727,7 @@ static void settings_run_nano_steer_action(void)
 {
     dispatch_async(dispatch_get_global_queue(0, 0), ^{
         if (!settings_ensure_kexploit()) {
-            log_user("[NANO-STEER] Failed: kernel primitives were not acquired.\n");
+            log_user("[NANO-STEER] Failed: kernel primitives were not acquired. Please try running chain again.\n");
         } else {
             (void)nano_registry_steer_new_watch_product_alias();
         }
@@ -2724,7 +2743,7 @@ static void settings_run_nano_seed_action(void)
 {
     dispatch_async(dispatch_get_global_queue(0, 0), ^{
         if (!settings_ensure_kexploit()) {
-            log_user("[NANO-SEED] Failed: kernel primitives were not acquired.\n");
+            log_user("[NANO-SEED] Failed: kernel primitives were not acquired. Please try running chain again.\n");
         } else {
             NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
             nano_registry_values values = {
@@ -2817,7 +2836,8 @@ static void settings_start_statbar_live_loop(void)
                     ok = statbar_apply_in_session([d boolForKey:kSettingsStatBarCelsius],
                                                   [d boolForKey:kSettingsStatBarShowNet],
                                                   [d boolForKey:kSettingsStatBarShowCPU],
-                                                  [d boolForKey:kSettingsStatBarShowLabels]);
+                                                  [d boolForKey:kSettingsStatBarShowLabels],
+                                                  [d boolForKey:kSettingsStatBarNetworkOnly]);
                 }
 
                 if (tick == 0) {
@@ -2914,7 +2934,8 @@ static void settings_apply_statbar_once_async(const char *reason)
             ok = statbar_apply_in_session([d boolForKey:kSettingsStatBarCelsius],
                                           [d boolForKey:kSettingsStatBarShowNet],
                                           [d boolForKey:kSettingsStatBarShowCPU],
-                                          [d boolForKey:kSettingsStatBarShowLabels]);
+                                          [d boolForKey:kSettingsStatBarShowLabels],
+                                          [d boolForKey:kSettingsStatBarNetworkOnly]);
         }
         // Only log lifecycle applies that change result; a clean success on
         // every foreground/background flip is noise.
@@ -3698,6 +3719,10 @@ static void settings_start_themer_live_loop(void)
     if (![d boolForKey:kSettingsThemerEnabled] &&
         ![d boolForKey:kSettingsSnowBoardLiteEnabled]) return;
     if (!g_springboard_rc_ready) return;
+    if (settings_themer_dynamic_updates_blocked_by_stage(d)) {
+        settings_note_themer_stage_conflict(YES);
+        return;
+    }
 
     if (__sync_lock_test_and_set(&g_themer_live_running, 1)) {
         static volatile int loggedAlready = 0;
@@ -3736,6 +3761,7 @@ static void settings_start_themer_live_loop(void)
                                                    &g_themer_live_stop_requested);
             while (([d boolForKey:kSettingsThemerEnabled] ||
                     [d boolForKey:kSettingsSnowBoardLiteEnabled]) &&
+                   !settings_themer_dynamic_updates_blocked_by_stage(d) &&
                    !settings_cleanup_in_progress() &&
                    !g_themer_live_stop_requested &&
                    tick < maxTicks) {
@@ -3766,6 +3792,7 @@ static void settings_start_themer_live_loop(void)
                 tick++;
                 if ((![d boolForKey:kSettingsThemerEnabled] &&
                      ![d boolForKey:kSettingsSnowBoardLiteEnabled]) ||
+                    settings_themer_dynamic_updates_blocked_by_stage(d) ||
                     g_themer_live_stop_requested ||
                     tick >= maxTicks) break;
 
@@ -3775,6 +3802,9 @@ static void settings_start_themer_live_loop(void)
                                                        &g_themer_live_stop_requested);
             }
         } @finally {
+            if (settings_themer_dynamic_updates_blocked_by_stage(d)) {
+                settings_note_themer_stage_conflict(YES);
+            }
             printf("[SETTINGS] Themer dynamic live loop exited ticks=%lu enabled=%d failures=%lu stop=%d\n",
                    (unsigned long)tick,
                    [d boolForKey:kSettingsThemerEnabled] || [d boolForKey:kSettingsSnowBoardLiteEnabled],
@@ -3795,6 +3825,10 @@ static void settings_schedule_themer_repair_burst_internal(const char *reason, B
     if (![d boolForKey:kSettingsThemerEnabled] &&
         ![d boolForKey:kSettingsSnowBoardLiteEnabled]) return;
     if (!g_springboard_rc_ready) return;
+    if (settings_themer_dynamic_updates_blocked_by_stage(d)) {
+        settings_note_themer_stage_conflict(force);
+        return;
+    }
 
     __sync_add_and_fetch(&g_themer_repair_generation, 1);
     if (__sync_lock_test_and_set(&g_themer_repair_running, 1)) return;
@@ -3810,6 +3844,7 @@ static void settings_schedule_themer_repair_burst_internal(const char *reason, B
         @try {
             while (([d boolForKey:kSettingsThemerEnabled] ||
                     [d boolForKey:kSettingsSnowBoardLiteEnabled]) &&
+                   !settings_themer_dynamic_updates_blocked_by_stage(d) &&
                    !settings_cleanup_in_progress() &&
                    !g_themer_live_stop_requested &&
                    tick < 1) {
@@ -3912,6 +3947,10 @@ void settings_application_did_enter_background(void)
     if (settings_cleanup_in_progress()) return;
 
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    BOOL themerLiveNeeded = g_springboard_rc_ready &&
+        !settings_themer_dynamic_updates_blocked_by_stage(d) &&
+        ([d boolForKey:kSettingsThemerEnabled] ||
+         [d boolForKey:kSettingsSnowBoardLiteEnabled]);
     BOOL anyLiveLoopNeeded =
         ([d boolForKey:kSettingsAxonLiteEnabled]    && g_springboard_rc_ready) ||
         (settings_rssi_install_allowed() && [d boolForKey:kSettingsRSSIDisplayEnabled] && g_springboard_rc_ready) ||
@@ -3919,8 +3958,7 @@ void settings_application_did_enter_background(void)
         ([d boolForKey:kSettingsNSBarEnabled]       && g_springboard_rc_ready) ||
         ([d boolForKey:kSettingsNiceBarLiteEnabled] && g_springboard_rc_ready) ||
         ([d boolForKey:kSettingsGravityLiteEnabled] && g_springboard_rc_ready) ||
-        ([d boolForKey:kSettingsThemerEnabled]      && g_springboard_rc_ready) ||
-        ([d boolForKey:kSettingsSnowBoardLiteEnabled] && g_springboard_rc_ready) ||
+        themerLiveNeeded ||
         ([d boolForKey:kSettingsLiveWPEnabled]      && g_springboard_rc_ready) ||
         (settings_typebanner_install_allowed() && [d boolForKey:kSettingsTypeBannerEnabled]);
     if (anyLiveLoopNeeded) {
@@ -4011,6 +4049,7 @@ static BOOL settings_key_is_statbar(NSString *key)
            [key isEqualToString:kSettingsStatBarShowNet] ||
            [key isEqualToString:kSettingsStatBarShowCPU] ||
            [key isEqualToString:kSettingsStatBarShowLabels] ||
+           [key isEqualToString:kSettingsStatBarNetworkOnly] ||
            [key isEqualToString:kSettingsStatBarRefreshRateSec];
 }
 
@@ -4492,7 +4531,8 @@ static void settings_schedule_live_apply_for_key(NSString *key)
                     bool ok = statbar_apply_in_session([d boolForKey:kSettingsStatBarCelsius],
                                                        [d boolForKey:kSettingsStatBarShowNet],
                                                        [d boolForKey:kSettingsStatBarShowCPU],
-                                                       [d boolForKey:kSettingsStatBarShowLabels]);
+                                                       [d boolForKey:kSettingsStatBarShowLabels],
+                                                       [d boolForKey:kSettingsStatBarNetworkOnly]);
                     settings_mark_tweak_applied(kSettingsStatBarEnabled,
                                                 ok && [d boolForKey:kSettingsStatBarEnabled]);
                     printf("[SETTINGS] live StatBar apply result=%d\n", ok);
@@ -4654,6 +4694,7 @@ void settings_register_defaults(void)
         kSettingsStatBarShowNet:    @NO,
         kSettingsStatBarShowCPU:    @YES,
         kSettingsStatBarShowLabels: @YES,
+        kSettingsStatBarNetworkOnly: @NO,
         kSettingsStatBarRefreshRateSec: @(kStatBarDefaultRefreshRateSec),
 
         kSettingsNSBarEnabled: @NO,
@@ -4852,6 +4893,10 @@ static void settings_run_actions_internal(BOOL pendingOnly)
             BOOL runLayoutExtras = settings_enabled_tweak_should_run(d, kSettingsLayoutExtrasEnabled, springBoardPendingOnly);
             BOOL runStageStrip = settings_stagestrip_install_allowed() && settings_enabled_tweak_should_run(d, kSettingsStageStripEnabled, springBoardPendingOnly);
             BOOL runGravityLite = settings_enabled_tweak_should_run(d, kSettingsGravityLiteEnabled, springBoardPendingOnly);
+            BOOL stagePausesThemerLive = settings_themer_dynamic_updates_blocked_by_stage(d);
+            if (stagePausesThemerLive) {
+                settings_note_themer_stage_conflict(YES);
+            }
             BOOL cleanupDisabledSpringBoardTweaks = settings_disabled_applied_springboard_cleanup_needed(d);
             BOOL needsSpringBoardWork = runSBC || runDarkTweaks || runStatBar || runNSBar || runNiceBarLite || runRSSI || runAxonLite || runGravityLite || runLayoutExtras || runTypeBanner || runThemer || runSnowBoardLite || runLiveWP || runStageStrip || cleanupDisabledSpringBoardTweaks;
             BOOL runSandboxEscape = [d boolForKey:kSettingsRunSandboxEscape] && (!pendingOnly || needsSpringBoardWork);
@@ -4926,8 +4971,8 @@ static void settings_run_actions_internal(BOOL pendingOnly)
 
             settings_progress(&step, total, "Racing kernel allocator for r/w primitives");
             if (!settings_ensure_kexploit()) {
-                log_user("[RUN] Failed: kernel primitives were not acquired.\n");
-                runCompletionMessage = @"Failed: kernel primitives were not acquired.";
+                log_user("[RUN] Failed: kernel primitives were not acquired. Please try running chain again.\n");
+                runCompletionMessage = @"Failed: kernel primitives were not acquired. Please try running chain again.";
                 cyanide_upload_log_milestone(@"krw-failed");
                 return;
             }
@@ -4966,8 +5011,8 @@ static void settings_run_actions_internal(BOOL pendingOnly)
                 @synchronized (settings_rc_lock()) {
                     settings_progress(&step, total, "Opening SpringBoard injection channel");
                     if (!settings_ensure_springboard_remote_call_locked()) {
-                        log_user("[RUN] Failed: could not open the SpringBoard control session.\n");
-                        runCompletionMessage = @"Failed: could not open the SpringBoard control session.";
+                        log_user("[RUN] Failed: could not open the SpringBoard control session. Please try installing tweaks again.\n");
+                        runCompletionMessage = @"Failed: could not open the SpringBoard control session. Please try installing tweaks again.";
                         cyanide_upload_log_milestone(@"springboard-remote-call-failed");
                         return;
                     }
@@ -5121,7 +5166,8 @@ static void settings_run_actions_internal(BOOL pendingOnly)
                         bool ok = statbar_apply_in_session([d boolForKey:kSettingsStatBarCelsius],
                                                            [d boolForKey:kSettingsStatBarShowNet],
                                                            [d boolForKey:kSettingsStatBarShowCPU],
-                                                           [d boolForKey:kSettingsStatBarShowLabels]);
+                                                           [d boolForKey:kSettingsStatBarShowLabels],
+                                                           [d boolForKey:kSettingsStatBarNetworkOnly]);
                         settings_mark_tweak_applied(kSettingsStatBarEnabled,
                                                     ok && [d boolForKey:kSettingsStatBarEnabled]);
                         log_user("%s StatBar %s.\n",
@@ -6101,6 +6147,7 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
         @{ @"kind": @"toggle", @"key": kSettingsStatBarShowCPU,     @"title": @"Show CPU %" },
         @{ @"kind": @"toggle", @"key": kSettingsStatBarShowLabels,  @"title": @"Show CPU / RAM labels" },
         @{ @"kind": @"toggle", @"key": kSettingsStatBarShowNet,     @"title": @"Show network speed" },
+        @{ @"kind": @"toggle", @"key": kSettingsStatBarNetworkOnly, @"title": @"Network speed only" },
         @{ @"kind": @"slider", @"key": kSettingsStatBarRefreshRateSec,
            @"title": @"Refresh rate", @"min": @1, @"max": @30, @"step": @1,
            @"unit": @"s", @"default": @(kStatBarDefaultRefreshRateSec) },
@@ -6372,6 +6419,7 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
         [out addObject:@{@"title": @"Show CPU %",          @"value": [d boolForKey:kSettingsStatBarShowCPU]    ? @"On" : @"Off"}];
         [out addObject:@{@"title": @"Show CPU/RAM labels", @"value": [d boolForKey:kSettingsStatBarShowLabels] ? @"On" : @"Off"}];
         [out addObject:@{@"title": @"Show net speed",      @"value": [d boolForKey:kSettingsStatBarShowNet]    ? @"On" : @"Off"}];
+        [out addObject:@{@"title": @"Network speed only",  @"value": [d boolForKey:kSettingsStatBarNetworkOnly] ? @"On" : @"Off"}];
         [out addObject:@{@"title": @"Refresh rate",        @"value": [NSString stringWithFormat:@"%lds",
                                                                        (long)[d integerForKey:kSettingsStatBarRefreshRateSec]]}];
     } else if (section == SectionNSBar) {
@@ -6680,10 +6728,11 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
     if (s == SectionThemer) {
         return @"Note: Cyanide Themer is still rough around the edges and may be glitchy. It will be iteratively improved to be more stable over time.\n\n"
                @"Pick a theme before running Cyanide Themer.\n\n"
+               @"Compatibility: when Dynamic Stage Lite is enabled, live icon repair is paused to avoid SpringBoard resprings. The selected theme still applies once.\n\n"
                @"Custom themes can be a folder of PNG files named by bundle ID, such as com.apple.mobilesafari.png, or a binary plist mapping bundle IDs to PNG data. Import copies the theme into Cyanide's Documents/Themes folder. Theme Format Guide includes examples and plist exports.";
     }
     if (s == SectionSnowBoardLite) {
-        return @"SnowBoard/IconBundles importer ported from d1y/cyanide-ios. Folder imports are copied into Cyanide's Documents/SnowBoardLite library and applied through the existing icon replacement pipeline.";
+        return @"SnowBoard/IconBundles importer ported from d1y/cyanide-ios. Folder imports are copied into Cyanide's Documents/SnowBoardLite library and applied through the existing icon replacement pipeline.\n\nCompatibility: when Dynamic Stage Lite is enabled, live icon repair is paused to avoid SpringBoard resprings. The selected theme still applies once.";
     }
     if (s == SectionLiveWP) {
         return @"Video wallpaper ported from d1y/cyanide-ios. Select an MP4, MOV, or M4V; Cyanide copies it into Documents/LiveWP and plays it in SpringBoard while the RemoteCall session stays alive.";
@@ -9000,8 +9049,8 @@ void cyanide_present_contact(UIViewController *host)
                     return;
                 }
                 if (!settings_ensure_kexploit()) {
-                    log_user("[GRAVITY] Failed: kernel primitives not acquired.\n");
-                    completionMessage = @"Gravity Lite failed: kernel primitives were not acquired.";
+                    log_user("[GRAVITY] Failed: kernel primitives not acquired. Please try running chain again.\n");
+                    completionMessage = @"Gravity Lite failed: kernel primitives were not acquired. Please try running chain again.";
                     return;
                 }
 
@@ -9086,8 +9135,8 @@ void cyanide_present_contact(UIViewController *host)
                     return;
                 }
                 if (!settings_ensure_kexploit()) {
-                    log_user("[LOCSIM] Failed: kernel primitives not acquired.\n");
-                    completionMessage = @"Location Simulator failed: kernel primitives were not acquired.";
+                    log_user("[LOCSIM] Failed: kernel primitives not acquired. Please try running chain again.\n");
+                    completionMessage = @"Location Simulator failed: kernel primitives were not acquired. Please try running chain again.";
                     return;
                 }
 
@@ -9165,8 +9214,8 @@ void cyanide_present_contact(UIViewController *host)
                     return;
                 }
                 if (!settings_ensure_kexploit()) {
-                    log_user("[LOCSIM] Strict App Mode failed: kernel primitives not acquired.\n");
-                    completionMessage = @"Strict App Mode failed: kernel primitives were not acquired.";
+                    log_user("[LOCSIM] Strict App Mode failed: kernel primitives not acquired. Please try running chain again.\n");
+                    completionMessage = @"Strict App Mode failed: kernel primitives were not acquired. Please try running chain again.";
                     return;
                 }
 
@@ -9728,7 +9777,7 @@ void cyanide_present_contact(UIViewController *host)
                         return;
                     }
                     if (!settings_ensure_kexploit()) {
-                        log_user("[TYPEBANNER] Test failed: kernel primitives not acquired. Run kexploit (Apply Tweaks) first.\n");
+                        log_user("[TYPEBANNER] Test failed: kernel primitives not acquired. Please try running chain again.\n");
                         return;
                     }
 
