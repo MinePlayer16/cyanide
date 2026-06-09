@@ -40,6 +40,7 @@
 #import "NiceBarSettingsSupport.h"
 #import <WebKit/WebKit.h>
 #import <MessageUI/MessageUI.h>
+#import <PhotosUI/PhotosUI.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <notify.h>
 #import <math.h>
@@ -201,6 +202,7 @@ NSString * const kSettingsRSSIDisplayCell    = @"RSSIDisplayCell";
 NSString * const kSettingsAxonLiteEnabled = @"AxonLiteEnabled";
 
 NSString * const kSettingsTypeBannerEnabled = @"TypeBannerEnabled";
+NSString * const kSettingsNotificationIslandEnabled = @"NotificationIslandEnabled";
 
 NSString * const kSettingsGravityLiteEnabled = @"GravityLiteEnabled";
 NSString * const kSettingsGravityLiteDockEnabled = @"GravityLiteDockEnabled";
@@ -282,6 +284,8 @@ static volatile int g_axonlite_live_running = 0;
 static volatile int g_axonlite_live_stop_requested = 0;
 static volatile int g_typebanner_live_running = 0;
 static volatile int g_typebanner_live_stop_requested = 0;
+static volatile int g_notificationisland_live_running = 0;
+static volatile int g_notificationisland_live_stop_requested = 0;
 static volatile int g_gravitylite_background_armed = 0;
 static volatile int g_gravitylite_start_worker_running = 0;
 static volatile int g_gravity_motion_stop_requested = 1;
@@ -395,6 +399,7 @@ static void settings_request_nicebarlite_stop(void) { g_nicebarlite_live_stop_re
 static void settings_request_rssi_stop(void) { g_rssi_live_stop_requested = 1; }
 static void settings_request_axonlite_stop(void) { g_axonlite_live_stop_requested = 1; }
 static void settings_request_typebanner_stop(void) { g_typebanner_live_stop_requested = 1; }
+static void settings_request_notificationisland_stop(void) { g_notificationisland_live_stop_requested = 1; }
 static void settings_request_themer_stop(void) { g_themer_live_stop_requested = 1; }
 static void settings_request_gravitylite_stop(void)
 {
@@ -410,6 +415,7 @@ static BOOL settings_nicebarlite_running(void) { return g_nicebarlite_live_runni
 static BOOL settings_rssi_running(void) { return g_rssi_live_running != 0; }
 static BOOL settings_axonlite_running(void) { return g_axonlite_live_running != 0; }
 static BOOL settings_typebanner_running(void) { return g_typebanner_live_running != 0; }
+static BOOL settings_notificationisland_running(void) { return g_notificationisland_live_running != 0; }
 static BOOL settings_themer_running(void) { return g_themer_live_running != 0 || g_themer_repair_running != 0; }
 static BOOL settings_livewp_running(void) { return g_livewp_live_running != 0; }
 
@@ -452,6 +458,12 @@ static bool settings_stop_typebanner_registered(BOOL springboardWillDie)
     return keepAlive && hidden;
 }
 
+static bool settings_stop_notificationisland_registered(BOOL springboardWillDie)
+{
+    (void)springboardWillDie;
+    return notificationisland_stop_in_session();
+}
+
 static bool settings_stop_gravitylite_registered(BOOL springboardWillDie)
 {
     (void)springboardWillDie;
@@ -489,6 +501,7 @@ static void settings_each_springboard_cleanup_entry(void (^block)(const Settings
         { kSettingsRSSIDisplayEnabled, "RSSI", settings_request_rssi_stop, settings_stop_rssi_registered, rssidisplay_forget_remote_state, settings_rssi_running, YES, YES },
         { kSettingsAxonLiteEnabled, "Axon Lite", settings_request_axonlite_stop, settings_stop_axonlite_registered, axonlite_forget_remote_state, settings_axonlite_running, YES, YES },
         { kSettingsTypeBannerEnabled, "TypeBanner", settings_request_typebanner_stop, settings_stop_typebanner_registered, typebanner_forget_remote_state, settings_typebanner_running, YES, YES },
+        { kSettingsNotificationIslandEnabled, "Notification Island", settings_request_notificationisland_stop, settings_stop_notificationisland_registered, notificationisland_forget_remote_state, settings_notificationisland_running, YES, YES },
         { kSettingsGravityLiteEnabled, "Gravity Lite", settings_request_gravitylite_stop, settings_stop_gravitylite_registered, gravitylite_forget_remote_state, NULL, YES, YES },
         { kSettingsThemerEnabled, "Themer", settings_request_themer_stop, settings_stop_themer_registered, themer_forget_remote_state, settings_themer_running, YES, YES },
         { kSettingsSnowBoardLiteEnabled, "SnowBoard Lite", settings_request_themer_stop, settings_stop_themer_registered, themer_forget_remote_state, settings_themer_running, YES, YES },
@@ -585,6 +598,9 @@ static const useconds_t kTypeBannerLiveIntervalUS = 1000000;
 static const useconds_t kTypeBannerLiveBackgroundIntervalUS = 1000000;
 static const useconds_t kTypeBannerInitialDaemonSettleUS = 250000;
 static const NSUInteger kTypeBannerLiveMaxTicks = 28800;
+static const useconds_t kNotificationIslandLiveIntervalUS = 750000;
+static const useconds_t kNotificationIslandLiveBackgroundIntervalUS = 1500000;
+static const NSUInteger kNotificationIslandLiveMaxTicks = 43200;
 // Only Clock/Calendar need periodic repair; normal icons persist through the
 // model graft and should not be repainted during SpringBoard animations.
 static const useconds_t kThemerLiveIntervalUS = 2000000;
@@ -746,6 +762,7 @@ static void settings_pause_livewp_for_sleep_async(const char *reason);
 static void settings_apply_rssi_once_async(const char *reason);
 static void settings_start_rssi_live_loop(void);
 static void settings_start_typebanner_live_loop(void);
+static void settings_start_notificationisland_live_loop(void);
 static void settings_start_themer_live_loop(void);
 static void settings_schedule_themer_repair_burst(const char *reason);
 static void settings_schedule_themer_quiet_repair_burst(const char *reason);
@@ -812,6 +829,11 @@ static BOOL settings_rssi_install_allowed(void)
 }
 
 static BOOL settings_typebanner_install_allowed(void)
+{
+    return cyanide_private_tweaks_available() && settings_experimental_tweaks_enabled();
+}
+
+static BOOL settings_notificationisland_install_allowed(void)
 {
     return cyanide_private_tweaks_available() && settings_experimental_tweaks_enabled();
 }
@@ -3565,6 +3587,7 @@ static void settings_start_typebanner_live_loop(void)
         BOOL deferredLogged = NO;
         BOOL pausedForMessages = NO;
         RemoteCallSession *mobileSession = nil;
+        RemoteCallSession *daemonSession = nil;
 
         printf("[SETTINGS] TypeBanner live loop started interval=%uus background=%uus max=%lu\n",
                kTypeBannerLiveIntervalUS,
@@ -3606,6 +3629,12 @@ static void settings_start_typebanner_live_loop(void)
                             mobileSession = nil;
                         }
                     }
+                    if (daemonSession) {
+                        @synchronized (settings_rc_lock()) {
+                            [daemonSession abandonRemoteCall];
+                            daemonSession = nil;
+                        }
+                    }
                     settings_live_loop_sleep_interruptible(0,
                                                            intervalUS,
                                                            &g_typebanner_live_stop_requested);
@@ -3625,8 +3654,9 @@ static void settings_start_typebanner_live_loop(void)
                             !g_settings_actions_running &&
                             g_kexploit_done &&
                             settings_typebanner_can_poll_messages()) {
-                            ok = typebanner_run_once_with_mobile_session_and_current_springboard(&mobileSession,
-                                                                                                 g_springboard_rc_ready != 0);
+                            ok = typebanner_run_once_with_cached_sessions(&mobileSession,
+                                                                          &daemonSession,
+                                                                          g_springboard_rc_ready != 0);
                         } else {
                             ok = true;
                         }
@@ -3670,6 +3700,12 @@ static void settings_start_typebanner_live_loop(void)
                     mobileSession = nil;
                 }
             }
+            if (daemonSession) {
+                @synchronized (settings_rc_lock()) {
+                    [daemonSession destroyRemoteCall];
+                    daemonSession = nil;
+                }
+            }
 
             // Best-effort hide the banner before exiting — drops any stale
             // pill that might persist in SpringBoard's window list.
@@ -3702,6 +3738,125 @@ static void settings_start_typebanner_live_loop(void)
                    (unsigned long)failures,
                    g_typebanner_live_stop_requested);
             __sync_lock_release(&g_typebanner_live_running);
+        }
+    });
+}
+
+static void settings_start_notificationisland_live_loop(void)
+{
+    if (!settings_device_supported()) return;
+    if (settings_cleanup_in_progress()) return;
+
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    if (!settings_notificationisland_install_allowed()) return;
+    if (![d boolForKey:kSettingsNotificationIslandEnabled]) return;
+    if (!g_springboard_rc_ready) return;
+
+    if (__sync_lock_test_and_set(&g_notificationisland_live_running, 1)) {
+        static volatile int loggedAlready = 0;
+        if (__sync_bool_compare_and_swap(&loggedAlready, 0, 1)) {
+            printf("[SETTINGS] Notification Island live loop already running\n");
+        }
+        return;
+    }
+
+    if (settings_cleanup_in_progress()) {
+        __sync_lock_release(&g_notificationisland_live_running);
+        return;
+    }
+
+    g_notificationisland_live_stop_requested = 0;
+    dispatch_async(dispatch_get_global_queue(0, 0), ^{
+        NSUInteger tick = 0;
+        NSUInteger failures = 0;
+        uint64_t nextTickUS = settings_now_us();
+        BOOL deferredLogged = NO;
+
+        printf("[SETTINGS] Notification Island live loop started interval=%uus background=%uus max=%lu\n",
+               kNotificationIslandLiveIntervalUS,
+               kNotificationIslandLiveBackgroundIntervalUS,
+               (unsigned long)kNotificationIslandLiveMaxTicks);
+        cyanide_upload_log_milestone(@"notification-island-live-started");
+
+        @try {
+            while ([d boolForKey:kSettingsNotificationIslandEnabled] &&
+                   !settings_cleanup_in_progress() &&
+                   !g_notificationisland_live_stop_requested &&
+                   tick < kNotificationIslandLiveMaxTicks) {
+                useconds_t intervalUS = settings_live_interval(kNotificationIslandLiveIntervalUS,
+                                                               kNotificationIslandLiveBackgroundIntervalUS);
+                uint64_t tickStartUS = settings_now_us();
+                bool ok = false;
+
+                if (!g_kexploit_done || g_settings_actions_running) {
+                    if (!deferredLogged) {
+                        printf("[SETTINGS] Notification Island tick deferred krw=%d actions=%d\n",
+                               g_kexploit_done, g_settings_actions_running);
+                        deferredLogged = YES;
+                    }
+                    settings_live_loop_sleep_interruptible(0,
+                                                           intervalUS,
+                                                           &g_notificationisland_live_stop_requested);
+                    nextTickUS = settings_now_us();
+                    continue;
+                }
+                deferredLogged = NO;
+
+                @synchronized (settings_rc_lock()) {
+                    if (g_notificationisland_live_stop_requested) break;
+                    if (!g_springboard_rc_ready) {
+                        printf("[SETTINGS] Notification Island loop has no SpringBoard RemoteCall session\n");
+                        failures++;
+                        break;
+                    }
+                    ok = notificationisland_tick_in_session();
+                }
+
+                if (tick == 0) {
+                    printf("[SETTINGS] Notification Island result=%d\n", ok);
+                    cyanide_upload_log_milestone(ok ? @"notification-island-live-first-ok" :
+                                                     @"notification-island-live-first-failed");
+                }
+                if (ok) {
+                    failures = 0;
+                } else {
+                    failures++;
+                    printf("[SETTINGS] Notification Island tick failed tick=%lu failures=%lu\n",
+                           (unsigned long)tick, (unsigned long)failures);
+                    if (failures >= settings_live_failure_limit(3)) break;
+                }
+
+                tick++;
+                if (![d boolForKey:kSettingsNotificationIslandEnabled] ||
+                    g_notificationisland_live_stop_requested ||
+                    tick >= kNotificationIslandLiveMaxTicks) break;
+
+                uint64_t nowUS = settings_now_us();
+                intervalUS = settings_live_interval(kNotificationIslandLiveIntervalUS,
+                                                    kNotificationIslandLiveBackgroundIntervalUS);
+                nextTickUS += intervalUS;
+                if (nowUS < nextTickUS) {
+                    settings_live_loop_sleep_interruptible(nextTickUS,
+                                                           (useconds_t)(nextTickUS - nowUS),
+                                                           &g_notificationisland_live_stop_requested);
+                } else {
+                    nextTickUS = nowUS;
+                }
+
+                uint64_t elapsedUS = tickStartUS != 0 && nowUS >= tickStartUS ? nowUS - tickStartUS : 0;
+                if (tick == 1) {
+                    printf("[SETTINGS] Notification Island tick=0 elapsed=%lluus\n", elapsedUS);
+                }
+            }
+        } @finally {
+            printf("[SETTINGS] Notification Island live loop exited ticks=%lu enabled=%d failures=%lu stop=%d\n",
+                   (unsigned long)tick,
+                   [d boolForKey:kSettingsNotificationIslandEnabled],
+                   (unsigned long)failures,
+                   g_notificationisland_live_stop_requested);
+            if (failures > 0)
+                cyanide_upload_log_milestone(@"notification-island-live-exited-failed");
+            __sync_lock_release(&g_notificationisland_live_running);
         }
     });
 }
@@ -3956,6 +4111,7 @@ void settings_application_did_enter_background(void)
         ([d boolForKey:kSettingsGravityLiteEnabled] && g_springboard_rc_ready) ||
         themerLiveNeeded ||
         ([d boolForKey:kSettingsLiveWPEnabled]      && g_springboard_rc_ready) ||
+        (settings_notificationisland_install_allowed() && [d boolForKey:kSettingsNotificationIslandEnabled] && g_springboard_rc_ready) ||
         (settings_typebanner_install_allowed() && [d boolForKey:kSettingsTypeBannerEnabled]);
     if (anyLiveLoopNeeded) {
         if ([d boolForKey:kSettingsKeepAlive]) {
@@ -3966,6 +4122,11 @@ void settings_application_did_enter_background(void)
 
     if ([d boolForKey:kSettingsAxonLiteEnabled] && g_springboard_rc_ready) {
         settings_apply_axonlite_once_async("entered background");
+    }
+    if (settings_notificationisland_install_allowed() &&
+        [d boolForKey:kSettingsNotificationIslandEnabled] &&
+        g_springboard_rc_ready) {
+        settings_start_notificationisland_live_loop();
     }
     if ([d boolForKey:kSettingsGravityLiteEnabled] && g_springboard_rc_ready) {
         if (g_gravitylite_background_armed != 0) {
@@ -4003,6 +4164,11 @@ void settings_application_will_enter_foreground(void)
     settings_apply_nicebarlite_once_async("will enter foreground");
     settings_apply_rssi_once_async("will enter foreground");
     settings_apply_axonlite_once_async("will enter foreground");
+    if (settings_notificationisland_install_allowed() &&
+        [[NSUserDefaults standardUserDefaults] boolForKey:kSettingsNotificationIslandEnabled] &&
+        g_springboard_rc_ready) {
+        settings_start_notificationisland_live_loop();
+    }
     settings_start_themer_live_loop();
     settings_resume_livewp_after_wake_async("will enter foreground");
     if (settings_typebanner_install_allowed() &&
@@ -4021,6 +4187,11 @@ void settings_application_did_become_active(void)
     settings_apply_nicebarlite_once_async("became active");
     settings_apply_rssi_once_async("became active");
     settings_apply_axonlite_once_async("became active");
+    if (settings_notificationisland_install_allowed() &&
+        [[NSUserDefaults standardUserDefaults] boolForKey:kSettingsNotificationIslandEnabled] &&
+        g_springboard_rc_ready) {
+        settings_start_notificationisland_live_loop();
+    }
     settings_start_themer_live_loop();
     settings_resume_livewp_after_wake_async("became active");
     if (settings_typebanner_install_allowed() &&
@@ -4095,6 +4266,11 @@ static BOOL settings_key_is_axonlite(NSString *key)
 static BOOL settings_key_is_typebanner(NSString *key)
 {
     return [key isEqualToString:kSettingsTypeBannerEnabled];
+}
+
+static BOOL settings_key_is_notificationisland(NSString *key)
+{
+    return [key isEqualToString:kSettingsNotificationIslandEnabled];
 }
 
 static BOOL settings_key_is_gravitylite(NSString *key)
@@ -4616,6 +4792,50 @@ static void settings_schedule_live_apply_for_key(NSString *key)
         return;
     }
 
+    if (settings_key_is_notificationisland(key)) {
+        if (!settings_notificationisland_install_allowed()) {
+            if ([d boolForKey:kSettingsNotificationIslandEnabled]) {
+                [d setBool:NO forKey:kSettingsNotificationIslandEnabled];
+                [d synchronize];
+            }
+            g_notificationisland_live_stop_requested = 1;
+            settings_mark_tweak_applied(kSettingsNotificationIslandEnabled, NO);
+            settings_notify_package_queue_changed_async();
+            notificationisland_forget_remote_state();
+            return;
+        }
+        if ([d boolForKey:kSettingsNotificationIslandEnabled] && g_springboard_rc_ready) {
+            dispatch_async(dispatch_get_global_queue(0, 0), ^{
+                bool ok = false;
+                @synchronized (settings_rc_lock()) {
+                    if (settings_cleanup_in_progress() ||
+                        ![d boolForKey:kSettingsNotificationIslandEnabled] ||
+                        !g_springboard_rc_ready) return;
+                    ok = notificationisland_apply_in_session();
+                    settings_mark_tweak_applied(kSettingsNotificationIslandEnabled,
+                                                ok && [d boolForKey:kSettingsNotificationIslandEnabled]);
+                    printf("[SETTINGS] live Notification Island apply result=%d\n", ok);
+                }
+                if (ok) settings_start_notificationisland_live_loop();
+                settings_notify_package_queue_changed_async();
+            });
+        } else if (![d boolForKey:kSettingsNotificationIslandEnabled]) {
+            g_notificationisland_live_stop_requested = 1;
+            settings_mark_tweak_applied(kSettingsNotificationIslandEnabled, NO);
+            settings_notify_package_queue_changed_async();
+            if (g_springboard_rc_ready) {
+                dispatch_async(dispatch_get_global_queue(0, 0), ^{
+                    @synchronized (settings_rc_lock()) {
+                        if (g_springboard_rc_ready) notificationisland_stop_in_session();
+                    }
+                });
+            } else {
+                notificationisland_forget_remote_state();
+            }
+        }
+        return;
+    }
+
     if (settings_key_is_nsbar(key)) {
         if ([d boolForKey:kSettingsNSBarEnabled] && g_springboard_rc_ready) {
             settings_apply_nsbar_once_async("live settings");
@@ -4970,6 +5190,7 @@ void settings_register_defaults(void)
         kSettingsAxonLiteEnabled: @NO,
 
         kSettingsTypeBannerEnabled: @NO,
+        kSettingsNotificationIslandEnabled: @NO,
 
         kSettingsGravityLiteEnabled: @NO,
         kSettingsGravityLiteDockEnabled: @YES,
@@ -5012,6 +5233,7 @@ void settings_register_defaults(void)
         NSArray<NSString *> *privateKeys = @[
             kSettingsRSSIDisplayEnabled,
             kSettingsTypeBannerEnabled,
+            kSettingsNotificationIslandEnabled,
             kSettingsStageStripEnabled,
         ];
         for (NSString *key in privateKeys) {
@@ -5032,6 +5254,9 @@ void settings_register_defaults(void)
         if ([defaults boolForKey:kSettingsTypeBannerEnabled]) {
             [defaults setBool:NO forKey:kSettingsTypeBannerEnabled];
         }
+        if ([defaults boolForKey:kSettingsNotificationIslandEnabled]) {
+            [defaults setBool:NO forKey:kSettingsNotificationIslandEnabled];
+        }
         if ([defaults boolForKey:kSettingsStageStripEnabled]) {
             [defaults setBool:NO forKey:kSettingsStageStripEnabled];
         }
@@ -5044,6 +5269,10 @@ void settings_register_defaults(void)
         }
         if ([defaults boolForKey:kSettingsTypeBannerEnabled]) {
             [defaults setBool:NO forKey:kSettingsTypeBannerEnabled];
+            changed = YES;
+        }
+        if ([defaults boolForKey:kSettingsNotificationIslandEnabled]) {
+            [defaults setBool:NO forKey:kSettingsNotificationIslandEnabled];
             changed = YES;
         }
         if ([defaults boolForKey:kSettingsStageStripEnabled]) {
@@ -5103,6 +5332,7 @@ static void settings_run_actions_internal(BOOL pendingOnly)
             BOOL rssiEnabled = settings_rssi_install_allowed() && [d boolForKey:kSettingsRSSIDisplayEnabled];
             BOOL axonLiteEnabled = [d boolForKey:kSettingsAxonLiteEnabled];
             BOOL typeBannerEnabled = settings_typebanner_install_allowed() && [d boolForKey:kSettingsTypeBannerEnabled];
+            BOOL notificationIslandEnabled = settings_notificationisland_install_allowed() && [d boolForKey:kSettingsNotificationIslandEnabled];
             BOOL themerEnabled = [d boolForKey:kSettingsThemerEnabled];
             BOOL snowboardLiteEnabled = [d boolForKey:kSettingsSnowBoardLiteEnabled];
             BOOL liveWPEnabled = [d boolForKey:kSettingsLiveWPEnabled];
@@ -5117,6 +5347,7 @@ static void settings_run_actions_internal(BOOL pendingOnly)
             BOOL runRSSI = settings_rssi_install_allowed() && settings_enabled_tweak_should_run(d, kSettingsRSSIDisplayEnabled, springBoardPendingOnly);
             BOOL runAxonLite = settings_enabled_tweak_should_run(d, kSettingsAxonLiteEnabled, springBoardPendingOnly);
             BOOL runTypeBanner = settings_typebanner_install_allowed() && settings_enabled_tweak_should_run(d, kSettingsTypeBannerEnabled, springBoardPendingOnly);
+            BOOL runNotificationIsland = settings_notificationisland_install_allowed() && settings_enabled_tweak_should_run(d, kSettingsNotificationIslandEnabled, springBoardPendingOnly);
             BOOL runThemer = settings_enabled_tweak_should_run(d, kSettingsThemerEnabled, springBoardPendingOnly);
             BOOL runSnowBoardLite = settings_enabled_tweak_should_run(d, kSettingsSnowBoardLiteEnabled, springBoardPendingOnly);
             BOOL runLiveWP = settings_enabled_tweak_should_run(d, kSettingsLiveWPEnabled, springBoardPendingOnly);
@@ -5128,7 +5359,7 @@ static void settings_run_actions_internal(BOOL pendingOnly)
                 settings_note_themer_stage_conflict(YES);
             }
             BOOL cleanupDisabledSpringBoardTweaks = settings_disabled_applied_springboard_cleanup_needed(d);
-            BOOL needsSpringBoardWork = runSBC || runDarkTweaks || runStatBar || runNSBar || runNiceBarLite || runRSSI || runAxonLite || runGravityLite || runLayoutExtras || runTypeBanner || runThemer || runSnowBoardLite || runLiveWP || runStageStrip || cleanupDisabledSpringBoardTweaks;
+            BOOL needsSpringBoardWork = runSBC || runDarkTweaks || runStatBar || runNSBar || runNiceBarLite || runRSSI || runAxonLite || runGravityLite || runLayoutExtras || runTypeBanner || runNotificationIsland || runThemer || runSnowBoardLite || runLiveWP || runStageStrip || cleanupDisabledSpringBoardTweaks;
             BOOL runSandboxEscape = [d boolForKey:kSettingsRunSandboxEscape] && (!pendingOnly || needsSpringBoardWork);
             // TypeBanner prewarms its hidden SpringBoard window during Apply
             // and reuses the open SpringBoard session for text-only updates.
@@ -5153,6 +5384,7 @@ static void settings_run_actions_internal(BOOL pendingOnly)
             if (runAxonLite) total++;
             if (runGravityLite) total++;
             if (runTypeBanner) total++;
+            if (runNotificationIsland) total++;
             if (runStageStrip) total++;
             if (cleanupDisabledSpringBoardTweaks) total++;
             NSUInteger step = 0;
@@ -5166,6 +5398,7 @@ static void settings_run_actions_internal(BOOL pendingOnly)
             if (runNiceBarLite) [enabledTweaks addObject:@"nicebar"];
             if (runRSSI) [enabledTweaks addObject:@"rssi"];
             if (runAxonLite) [enabledTweaks addObject:@"axon"];
+            if (runNotificationIsland) [enabledTweaks addObject:@"notification-island"];
             if (runGravityLite) [enabledTweaks addObject:[NSString stringWithFormat:@"gravity(%ld%%)", (long)[d integerForKey:kSettingsGravityLiteMagnitudePct]]];
             if (runPowercuff) [enabledTweaks addObject:[NSString stringWithFormat:@"power(%@)", [d stringForKey:kSettingsPowercuffLevel] ?: @"nominal"]];
             if (runDarkTweaks) [enabledTweaks addObject:@"dark"];
@@ -5188,6 +5421,7 @@ static void settings_run_actions_internal(BOOL pendingOnly)
                 if (!rssiEnabled) g_rssi_live_stop_requested = 1;
                 if (!axonLiteEnabled) g_axonlite_live_stop_requested = 1;
                 if (!typeBannerEnabled) g_typebanner_live_stop_requested = 1;
+                if (!notificationIslandEnabled) g_notificationisland_live_stop_requested = 1;
                 if (!themerEnabled && !snowboardLiteEnabled) g_themer_live_stop_requested = 1;
                 if (!liveWPEnabled) g_livewp_live_stop_requested = 1;
                 if (!gravityLiteEnabled) settings_request_gravitylite_stop();
@@ -5479,6 +5713,19 @@ static void settings_run_actions_internal(BOOL pendingOnly)
                                                      (deferred ? @"axon-lite-initial-deferred" : @"axon-lite-initial-failed"));
                     }
 
+                    if (runNotificationIsland) {
+                        settings_progress(&step, total, "Starting Notification Island");
+                        bool ok = notificationisland_apply_in_session();
+                        settings_mark_tweak_applied(kSettingsNotificationIslandEnabled,
+                                                    ok && [d boolForKey:kSettingsNotificationIslandEnabled]);
+                        printf("[SETTINGS] Notification Island result=%d\n", ok);
+                        log_user("%s Notification Island %s.\n",
+                                 ok ? "[OK]" : "[WARN]",
+                                 ok ? "watching incoming banners" : "did not start cleanly");
+                        cyanide_upload_log_milestone(ok ? @"notification-island-initial-applied" :
+                                                         @"notification-island-initial-failed");
+                    }
+
                     if (runStageStrip) {
                         settings_progress(&step, total, "Installing Dynamic Stage Lite");
                         bool ok = stagestrip_apply_in_session(4);
@@ -5527,6 +5774,11 @@ static void settings_run_actions_internal(BOOL pendingOnly)
                 } else if (!axonLiteEnabled) {
                     g_axonlite_live_stop_requested = 1;
                 }
+                if (runNotificationIsland) {
+                    settings_start_notificationisland_live_loop();
+                } else if (!notificationIslandEnabled) {
+                    g_notificationisland_live_stop_requested = 1;
+                }
             }
 
             if (runTypeBanner) {
@@ -5545,7 +5797,7 @@ static void settings_run_actions_internal(BOOL pendingOnly)
             } else if (!typeBannerEnabled) {
                 g_typebanner_live_stop_requested = 1;
             }
-            if (runStatBar || runNSBar || runNiceBarLite || runRSSI || runAxonLite || runTypeBanner || runLiveWP)
+            if (runStatBar || runNSBar || runNiceBarLite || runRSSI || runAxonLite || runTypeBanner || runNotificationIsland || runLiveWP)
                 cyanide_upload_log_milestone(@"live-tweaks-started");
 
             if (!settings_has_persistent_springboard_remote_call_user()) {
@@ -5622,6 +5874,7 @@ typedef NS_ENUM(NSInteger, SettingsSection) {
     SectionRSSI,
     SectionAxonLite,
     SectionTypeBanner,
+    SectionNotificationIsland,
     SectionPowercuff,
     SectionDarkSwordTweaks,
     SectionDragCoefficient,
@@ -5694,7 +5947,7 @@ static NSString *settings_pretty_date_for_iso(NSString *iso)
     return date ? [out stringFromDate:date] : iso;
 }
 
-@interface SettingsViewController () <UIDocumentPickerDelegate>
+@interface SettingsViewController () <UIDocumentPickerDelegate, PHPickerViewControllerDelegate>
 @property (nonatomic, strong) UISegmentedControl *powercuffSegmented;
 @property (nonatomic, assign) BOOL pendingManualActionsReload;
 @property (nonatomic, assign) BOOL detailMode;
@@ -5956,6 +6209,13 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
 @end
 
 @implementation SettingsViewController
+
++ (BOOL)liveWPHasSelectedVideo
+{
+    NSString *path = livewp_absolute_path();
+    if (path.length == 0) return NO;
+    return [[NSFileManager defaultManager] fileExistsAtPath:path];
+}
 
 - (instancetype)initWithCoder:(NSCoder *)coder
 {
@@ -6445,6 +6705,16 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
     ];
 }
 
+- (NSArray<NSDictionary *> *)notificationIslandRows
+{
+    return @[
+        @{ @"kind": @"button",
+           @"title": @"Show Sample Island",
+           @"subtitle": @"Starts the same ActivityKit route used for captured incoming notification banners.",
+           @"action": @"notificationisland-sample" },
+    ];
+}
+
 - (NSArray<NSDictionary *> *)gravityLiteRows
 {
     return @[
@@ -6711,6 +6981,7 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
         case SectionRSSI:      return self.rssiRows;
         case SectionAxonLite:  return self.axonLiteRows;
         case SectionTypeBanner: return self.typebannerRows;
+        case SectionNotificationIsland: return self.notificationIslandRows;
         case SectionGravityLite: return self.gravityLiteRows;
         case SectionLocationSim: return self.locationSimRows;
         case SectionSnowBoardLite: return self.snowboardLiteRows;
@@ -6739,6 +7010,7 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
         @{ @"title": @"Axon Lite",          @"icon": @"bell.badge.fill",                     @"color": [UIColor systemRedColor],    @"section": @(SectionAxonLite) },
 #if CYANIDE_PRIVATE_TWEAKS_AVAILABLE
         @{ @"title": @"TypeBanner",         @"icon": @"ellipsis.bubble.fill",                @"color": [UIColor systemTealColor],   @"section": @(SectionTypeBanner), @"indev": @YES },
+        @{ @"title": @"Notification Island", @"icon": @"bell.and.waves.left.and.right.fill",  @"color": [UIColor systemOrangeColor], @"section": @(SectionNotificationIsland), @"indev": @YES },
 #endif
         @{ @"title": @"Gravity Lite",       @"icon": @"arrow.down.circle.fill",              @"color": [UIColor systemGreenColor],  @"section": @(SectionGravityLite) },
         @{ @"title": @"Location Simulator", @"icon": @"location.fill",                       @"color": [UIColor systemGreenColor],  @"section": @(SectionLocationSim) },
@@ -6946,6 +7218,9 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
     }
     if (s == SectionTypeBanner) {
         return @"Partial TypeMillennium port. Detection runs against imagent using original-thread RemoteCall probes, while SpringBoard renders a prewarmed banner window.";
+    }
+    if (s == SectionNotificationIsland) {
+        return @"Experimental Dynamic Island notification route. Cyanide polls SpringBoard's active banner request through the shared RemoteCall session, then mirrors it through the app's ActivityKit Live Activity.";
     }
     if (s == SectionGravityLite) {
         return @"RemoteCall-only core port of Julio Verne's Gravity. Run applies UIDynamicAnimator gravity, collision, bounce, friction, optional dock physics, and accelerometer steering to SpringBoard icon snapshots. It can restore the icon layout or fire a manual explosion pulse while the SpringBoard session is active.\n\nNot included in this core port: Activator/Home-button hooks, drag gestures, automatic shake effects, and preference-daemon notifications.";
@@ -7367,8 +7642,62 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
 
 - (void)presentLiveWPVideoPicker
 {
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Choose Video"
+                                                                   message:nil
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Photos"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *a) {
+        (void)a;
+        [self presentLiveWPPhotosPicker];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Files"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *a) {
+        (void)a;
+        [self presentLiveWPDocumentPicker];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    UIPopoverPresentationController *pop = sheet.popoverPresentationController;
+    if (pop) {
+        pop.sourceView = self.view;
+        pop.sourceRect = CGRectMake(CGRectGetMidX(self.view.bounds), CGRectGetMidY(self.view.bounds), 1, 1);
+        pop.permittedArrowDirections = 0;
+    }
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)presentLiveWPPhotosPicker
+{
+    PHPickerConfiguration *config = [[PHPickerConfiguration alloc] init];
+    config.filter = [PHPickerFilter videosFilter];
+    config.selectionLimit = 1;
+    config.preferredAssetRepresentationMode = PHPickerConfigurationAssetRepresentationModeCurrent;
+
+    PHPickerViewController *picker = [[PHPickerViewController alloc] initWithConfiguration:config];
+    picker.delegate = self;
+    [self presentViewController:picker animated:YES completion:nil];
+}
+
+- (NSArray<UTType *> *)liveWPVideoDocumentTypes
+{
+    NSMutableArray<UTType *> *types = [NSMutableArray array];
+    NSArray<NSString *> *extensions = @[@"mp4", @"mov", @"m4v"];
+    for (NSString *ext in extensions) {
+        UTType *type = [UTType typeWithFilenameExtension:ext];
+        if (type) [types addObject:type];
+    }
+    [types addObject:UTTypeMovie];
+    [types addObject:UTTypeAudiovisualContent];
+    return types;
+}
+
+- (void)presentLiveWPDocumentPicker
+{
     UIDocumentPickerViewController *picker =
-        [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeMovie]];
+        [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:[self liveWPVideoDocumentTypes]];
     picker.delegate = self;
     picker.allowsMultipleSelection = NO;
     self.pendingThemeImportMode = @"livewp";
@@ -7446,6 +7775,91 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
         if (ok) settings_start_livewp_live_loop();
         settings_notify_package_queue_changed_async();
     });
+}
+
+- (NSString *)liveWPPreferredTypeIdentifierForProvider:(NSItemProvider *)provider
+{
+    NSMutableArray<NSString *> *identifiers = [NSMutableArray array];
+    for (UTType *type in [self liveWPVideoDocumentTypes]) {
+        if (type.identifier.length > 0) [identifiers addObject:type.identifier];
+    }
+    [identifiers addObjectsFromArray:@[
+        @"public.mpeg-4",
+        @"com.apple.m4v-video",
+        @"com.apple.quicktime-movie",
+        @"public.movie",
+        @"public.audiovisual-content",
+    ]];
+    for (NSString *identifier in identifiers) {
+        if ([provider hasItemConformingToTypeIdentifier:identifier]) return identifier;
+    }
+    return nil;
+}
+
+- (void)finishLiveWPVideoImportFromURL:(NSURL *)url
+                           displayName:(NSString *)displayName
+{
+    NSError *err = nil;
+    BOOL ok = [self importLiveWPVideoAtURL:url error:&err];
+    BOOL liveReady = settings_tweak_is_applied(kSettingsLiveWPEnabled) && g_springboard_rc_ready;
+    NSString *name = displayName.length ? displayName : (url.lastPathComponent ?: @"Video");
+    NSString *successMessage = liveReady
+        ? [NSString stringWithFormat:@"%@ was imported and will swap into the running LiveWP session.", name]
+        : [NSString stringWithFormat:@"%@ is ready. Toggle LiveWP on and tap Run to apply.", name];
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!ok) {
+            NSString *msg = err.localizedDescription ?: @"The selected video could not be imported.";
+            UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Import Failed"
+                                                                         message:msg
+                                                                  preferredStyle:UIAlertControllerStyleAlert];
+            [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [self presentViewController:ac animated:YES completion:nil];
+            return;
+        }
+        [self finishLiveWPVideoImportAndSwapIfRunning];
+        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Video Selected"
+                                                                     message:successMessage
+                                                              preferredStyle:UIAlertControllerStyleAlert];
+        [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:ac animated:YES completion:nil];
+    });
+}
+
+- (void)picker:(PHPickerViewController *)picker
+didFinishPicking:(NSArray<PHPickerResult *> *)results
+{
+    [picker dismissViewControllerAnimated:YES completion:nil];
+    PHPickerResult *result = results.firstObject;
+    if (!result) return;
+
+    NSItemProvider *provider = result.itemProvider;
+    NSString *identifier = [self liveWPPreferredTypeIdentifierForProvider:provider];
+    if (identifier.length == 0) {
+        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Import Failed"
+                                                                     message:@"Choose an MP4, MOV, or M4V video."
+                                                              preferredStyle:UIAlertControllerStyleAlert];
+        [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:ac animated:YES completion:nil];
+        return;
+    }
+
+    NSString *displayName = provider.suggestedName ?: @"Video";
+    [provider loadFileRepresentationForTypeIdentifier:identifier
+                                    completionHandler:^(NSURL *url, NSError *error) {
+        if (!url || error) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSString *msg = error.localizedDescription ?: @"The selected video could not be opened.";
+                UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Import Failed"
+                                                                             message:msg
+                                                                      preferredStyle:UIAlertControllerStyleAlert];
+                [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                [self presentViewController:ac animated:YES completion:nil];
+            });
+            return;
+        }
+        [self finishLiveWPVideoImportFromURL:url displayName:displayName];
+    }];
 }
 
 - (BOOL)importThemerFolderAtURL:(NSURL *)url error:(NSError **)error
@@ -8160,8 +8574,8 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
 
 #if CYANIDE_PRIVATE_TWEAKS_AVAILABLE
     cell.detailTextLabel.text = on
-        ? @"Active — Signal Readouts, TypeBanner, Dynamic Stage Lite."
-        : @"Signal Readouts, TypeBanner, Dynamic Stage Lite.";
+        ? @"Active — Signal Readouts, TypeBanner, Notification Island, Dynamic Stage Lite."
+        : @"Signal Readouts, TypeBanner, Notification Island, Dynamic Stage Lite.";
 #else
     cell.detailTextLabel.text = on
         ? @"Active — no private experimental tweaks in this build."
@@ -8229,6 +8643,12 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
         settings_notify_package_queue_changed_async();
         settings_schedule_live_apply_for_key(kSettingsTypeBannerEnabled);
     }
+    if ([d boolForKey:kSettingsNotificationIslandEnabled]) {
+        [d setBool:NO forKey:kSettingsNotificationIslandEnabled];
+        settings_mark_tweak_applied(kSettingsNotificationIslandEnabled, NO);
+        settings_notify_package_queue_changed_async();
+        settings_schedule_live_apply_for_key(kSettingsNotificationIslandEnabled);
+    }
     if ([d boolForKey:kSettingsRSSIDisplayEnabled]) {
         [d setBool:NO forKey:kSettingsRSSIDisplayEnabled];
         settings_mark_tweak_applied(kSettingsRSSIDisplayEnabled, NO);
@@ -8268,6 +8688,12 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
         settings_mark_tweak_applied(kSettingsTypeBannerEnabled, NO);
         settings_notify_package_queue_changed_async();
         settings_schedule_live_apply_for_key(kSettingsTypeBannerEnabled);
+    }
+    if ([d boolForKey:kSettingsNotificationIslandEnabled]) {
+        [d setBool:NO forKey:kSettingsNotificationIslandEnabled];
+        settings_mark_tweak_applied(kSettingsNotificationIslandEnabled, NO);
+        settings_notify_package_queue_changed_async();
+        settings_schedule_live_apply_for_key(kSettingsNotificationIslandEnabled);
     }
     if ([d boolForKey:kSettingsRSSIDisplayEnabled]) {
         [d setBool:NO forKey:kSettingsRSSIDisplayEnabled];
@@ -10088,6 +10514,42 @@ void cyanide_present_contact(UIViewController *host)
                                           withRowAnimation:UITableViewRowAnimationNone];
                     });
                 }
+            });
+        }
+        return;
+    }
+
+    if (indexPath.section == SectionNotificationIsland) {
+        NSDictionary *row = [self rowsForSection:indexPath.section][indexPath.row];
+        if (![row[@"kind"] isEqualToString:@"button"]) return;
+        NSString *action = row[@"action"];
+        if ([action isEqualToString:@"notificationisland-sample"]) {
+            if (!settings_notificationisland_install_allowed()) {
+                log_user("[NISLAND] Notification Island is unavailable in this build or experimental access is off.\n");
+                return;
+            }
+            dispatch_async(dispatch_get_global_queue(0, 0), ^{
+                if (g_settings_actions_running) {
+                    log_user("[NISLAND] Sample aborted: Apply Tweaks is still running.\n");
+                    return;
+                }
+                if (!settings_ensure_kexploit()) {
+                    log_user("[NISLAND] Sample failed: kernel primitives not acquired. Please try running chain again.\n");
+                    return;
+                }
+                bool ok = false;
+                @synchronized (settings_rc_lock()) {
+                    if (!settings_ensure_springboard_remote_call_locked()) {
+                        log_user("[NISLAND] SpringBoard not reachable; cannot show sample.\n");
+                        return;
+                    }
+                    notificationisland_apply_in_session();
+                    ok = notificationisland_show_sample_in_session("Notification Island", "Sample banner route");
+                }
+                log_user("%s Notification Island sample %s.\n",
+                         ok ? "[OK]" : "[WARN]",
+                         ok ? "started" : "did not start");
+                if (ok) settings_start_notificationisland_live_loop();
             });
         }
         return;

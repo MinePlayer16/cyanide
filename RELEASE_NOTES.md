@@ -19,6 +19,14 @@ Avoid vague bullets like "Update settings", "Change project files", or
 
 ## Released
 
+### v1.2.14 - 2026-06-09
+
+- [x] Added the private Notification Island tweak to the installer/settings flow and reduced TypeBanner live polling overhead by reusing its imagent RemoteCall session.
+- [x] Fixed Dynamic Stage Lite visibility for paid users.
+- [x] Fixed LiveWP video selection from Files and added Photos video selection.
+- [x] Let active LiveWP users change videos from the installer without deactivating the wallpaper first.
+- [x] Prevented LiveWP activation until a valid video has been selected.
+
 ### v1.2.13 - 2026-06-08
 
 - [x] Moved Location Simulator to Beta and into the public app tree so it is available without enabling Experimental Tweaks.

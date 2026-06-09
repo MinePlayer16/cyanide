@@ -32,6 +32,13 @@ static NSString * const kTipsExpandedDefault    = @"installer.tipsExpanded";
            !settings_themer_has_selected_theme();
 }
 
+- (BOOL)packageNeedsLiveWPVideoBeforeInstall:(Package *)pkg
+{
+    return [pkg.identifier isEqualToString:@"com.darksword.livewp"] &&
+           !pkg.isInstalled &&
+           ![SettingsViewController liveWPHasSelectedVideo];
+}
+
 - (void)viewDidLoad
 {
     [super viewDidLoad];
@@ -761,6 +768,10 @@ static NSString * const kTipsExpandedDefault    = @"installer.tipsExpanded";
         title  = @"Select Theme";
         color  = self.view.tintColor;
         symbol = @"paintpalette";
+    } else if ([self packageNeedsLiveWPVideoBeforeInstall:pkg]) {
+        title  = @"Select Video";
+        color  = self.view.tintColor;
+        symbol = @"photo.badge.plus";
     } else {
         title  = @"Activate";
         color  = self.view.tintColor;
@@ -780,6 +791,11 @@ static NSString * const kTipsExpandedDefault    = @"installer.tipsExpanded";
         if (isInstall && [self packageNeedsThemeBeforeInstall:pkg]) {
             done(YES);
             [self presentThemeRequiredAlertForPackage:pkg];
+            return;
+        }
+        if (isInstall && [self packageNeedsLiveWPVideoBeforeInstall:pkg]) {
+            done(YES);
+            [self navigateToSettingsSectionForPackage:pkg];
             return;
         }
         [q toggleForPackage:pkg];

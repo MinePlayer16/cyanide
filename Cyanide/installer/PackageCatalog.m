@@ -18,15 +18,17 @@ static const NSInteger kSecStatBar          = 5;
 static const NSInteger kSecNSBar            = 6;
 static const NSInteger kSecNiceBarLite      = 7;
 static const NSInteger kSecRSSI             = 8;
-static const NSInteger kSecPowercuff        = 11;
-static const NSInteger kSecDragCoefficient  = 13;
-static const NSInteger kSecLayoutExtras     = 14;
-static const NSInteger kSecNanoRegistry     = 15;
-static const NSInteger kSecThemer           = 16;
-static const NSInteger kSecSnowBoardLite    = 17;
-static const NSInteger kSecLiveWP           = 18;
-static const NSInteger kSecLocationSim      = 19;
-static const NSInteger kSecGravityLite      = 20;
+static const NSInteger kSecTypeBanner       = 10;
+static const NSInteger kSecNotificationIsland = 11;
+static const NSInteger kSecPowercuff        = 12;
+static const NSInteger kSecDragCoefficient  = 14;
+static const NSInteger kSecLayoutExtras     = 15;
+static const NSInteger kSecNanoRegistry     = 16;
+static const NSInteger kSecThemer           = 17;
+static const NSInteger kSecSnowBoardLite    = 18;
+static const NSInteger kSecLiveWP           = 19;
+static const NSInteger kSecLocationSim      = 20;
+static const NSInteger kSecGravityLite      = 21;
 
 + (NSArray<Package *> *)allPackages
 {
@@ -153,7 +155,7 @@ static const NSInteger kSecGravityLite      = 20;
         Package *typeBanner = [[Package alloc] initWithIdentifier:@"com.darksword.typebanner"
                                            name:@"TypeBanner"
                                shortDescription:@"iMessage typing banner under the Dynamic Island"
-                                longDescription:@"Port of TypeMillennium. Shows a pill banner just below the Dynamic Island whenever the active Messages conversation list shows a typing indicator.\n\nv1 limitation: detection runs against the Messages app's own view hierarchy via RemoteCall, so it only fires while Messages.app is running.\n\nNo extra configuration."
+                                longDescription:@"Port of TypeMillennium. Shows a pill banner just below the Dynamic Island when imagent reports an active iMessage typing indicator.\n\nNo extra configuration."
                                         version:version
                                          author:@"zeroxjf"
                                        category:@"In Development"
@@ -162,8 +164,25 @@ static const NSInteger kSecGravityLite      = 20;
                                      enabledKey:kSettingsTypeBannerEnabled
                                           isNew:YES];
         typeBanner.experimental = YES;
+        typeBanner.settingsSection = kSecTypeBanner;
         typeBanner.creatorOnly = YES;
-        typeBanner.unstableWarning = @"⚠️ In development — extremely unstable. Polls MobileSMS over RemoteCall every ~1.5s and is known to crash SpringBoard. Detection only fires while Messages.app is running.";
+        typeBanner.unstableWarning = @"⚠️ In development — extremely unstable. Keeps an original-thread imagent RemoteCall session for live polling and may miss indicators or destabilize SpringBoard.";
+
+        Package *notificationIsland = [[Package alloc] initWithIdentifier:@"com.darksword.notificationisland"
+                                           name:@"Notification Island"
+                               shortDescription:@"Mirror incoming banners into the Dynamic Island"
+                                longDescription:@"Experimental Dynamic Island notification route. Watches SpringBoard's active banner request over the shared RemoteCall session, then mirrors the title/body into Cyanide's ActivityKit Live Activity.\n\nNo extra configuration."
+                                        version:version
+                                         author:@"zeroxjf"
+                                       category:@"In Development"
+                                     symbolName:@"bell.and.waves.left.and.right.fill"
+                                           kind:PackageInstallKindToggle
+                                     enabledKey:kSettingsNotificationIslandEnabled
+                                          isNew:YES];
+        notificationIsland.settingsSection = kSecNotificationIsland;
+        notificationIsland.experimental = YES;
+        notificationIsland.creatorOnly = YES;
+        notificationIsland.unstableWarning = @"⚠️ In development — polls SpringBoard notification state over RemoteCall and may miss banners, duplicate activity updates, or destabilize SpringBoard.";
 
         Package *stageStrip = [[Package alloc] initWithIdentifier:@"com.darksword.stagestrip"
                                            name:@"Dynamic Stage Lite"
@@ -177,7 +196,7 @@ static const NSInteger kSecGravityLite      = 20;
             @"• Drag the top bar to move; drag any corner to resize.\n"
             @"• X in the top-left of a window closes it.\n"
             @"• Gear in the picker tray jumps back to Cyanide settings.\n\n"
-            @"First Run is slow. The picker has to enumerate every installed app over RemoteCall and build a tile for each one — expect 1-2 minutes on a fresh install. Re-Runs reuse the cache and are fast.\n\n"
+            @"First Run is slow. The picker has to enumerate every installed app over RemoteCall and build a tile per app — expect 1-2 minutes on a fresh install. Re-Runs reuse the cache and are fast.\n\n"
             @"Rough edges:\n"
             @"• Touch routing into hosted apps isn't wired — windows are for viewing/switching, not scrolling or typing.\n"
             @"• Auto-close on full-screen launch is not yet hooked up; close manually with the X.\n"
@@ -428,6 +447,7 @@ static const NSInteger kSecGravityLite      = 20;
             callRecordingSound,
 #if CYANIDE_PRIVATE_TWEAKS_AVAILABLE
             typeBanner,
+            notificationIsland,
             stageStrip,
 #endif
             locationSim,

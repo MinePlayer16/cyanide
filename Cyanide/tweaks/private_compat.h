@@ -27,12 +27,14 @@
 
 #if __has_include("private/rssidisplay.h") && \
     __has_include("private/typebanner.h") && \
+    __has_include("private/notificationisland.h") && \
     __has_include("private/stagestrip.h")
 
 #define CYANIDE_PRIVATE_TWEAKS_AVAILABLE 1
 
 #import "private/rssidisplay.h"
 #import "private/typebanner.h"
+#import "private/notificationisland.h"
 #import "private/stagestrip.h"
 
 #else
@@ -192,6 +194,16 @@ static inline bool typebanner_run_once_with_mobile_session_and_current_springboa
     return false;
 }
 
+static inline bool typebanner_run_once_with_cached_sessions(RemoteCallSession **mobileSessionRef,
+                                                            RemoteCallSession **daemonSessionRef,
+                                                            bool currentSpringBoardReady)
+{
+    (void)mobileSessionRef;
+    (void)daemonSessionRef;
+    (void)currentSpringBoardReady;
+    return false;
+}
+
 static inline bool typebanner_has_remote_state(void)
 {
     return false;
@@ -202,6 +214,37 @@ static inline void typebanner_forget_remote_state(void)
 }
 
 static inline bool typebanner_mobile_was_unreachable_last_tick(void)
+{
+    return false;
+}
+
+static inline bool notificationisland_apply_in_session(void)
+{
+    return false;
+}
+
+static inline bool notificationisland_tick_in_session(void)
+{
+    return false;
+}
+
+static inline bool notificationisland_show_sample_in_session(const char *title, const char *body)
+{
+    (void)title;
+    (void)body;
+    return false;
+}
+
+static inline bool notificationisland_stop_in_session(void)
+{
+    return false;
+}
+
+static inline void notificationisland_forget_remote_state(void)
+{
+}
+
+static inline bool notificationisland_has_remote_state(void)
 {
     return false;
 }

@@ -278,11 +278,23 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
     return [self.package.identifier isEqualToString:@"com.darksword.themer"];
 }
 
+- (BOOL)isLiveWPPackage
+{
+    return [self.package.identifier isEqualToString:@"com.darksword.livewp"];
+}
+
 - (BOOL)needsThemeBeforeInstall
 {
     return [self requiresThemeSelection] &&
            !self.package.isInstalled &&
            !settings_themer_has_selected_theme();
+}
+
+- (BOOL)needsLiveWPVideoBeforeInstall
+{
+    return [self isLiveWPPackage] &&
+           !self.package.isInstalled &&
+           ![SettingsViewController liveWPHasSelectedVideo];
 }
 
 - (void)viewDidLoad
@@ -489,6 +501,10 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
     } else if (intent != PackageQueueIntentNone) {
         title = @"Cancel";
         tint = UIColor.secondaryLabelColor;
+    } else if (installed && [self isLiveWPPackage] && [self hasSettingsBundle]) {
+        title = @"Change Video";
+        tint = self.view.tintColor;
+        style = UIBarButtonItemStyleDone;
     } else if (installed) {
         title = @"Deactivate";
         tint = UIColor.systemRedColor;
@@ -500,6 +516,9 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
         tint = UIColor.secondaryLabelColor;
     } else if ([self needsThemeBeforeInstall]) {
         title = @"Select Theme";
+        style = UIBarButtonItemStyleDone;
+    } else if ([self needsLiveWPVideoBeforeInstall]) {
+        title = @"Select Video";
         style = UIBarButtonItemStyleDone;
     } else {
         title = @"Activate";
@@ -540,7 +559,15 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
         [self promptSelectThemeBeforeInstall];
         return;
     }
+    if ([self needsLiveWPVideoBeforeInstall]) {
+        [self navigateToSettingsSection];
+        return;
+    }
     if ([self isDirectToolPackage]) {
+        [self navigateToSettingsSection];
+        return;
+    }
+    if (self.package.isInstalled && [self isLiveWPPackage] && [self hasSettingsBundle]) {
         [self navigateToSettingsSection];
         return;
     }

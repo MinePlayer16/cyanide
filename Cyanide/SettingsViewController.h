@@ -57,6 +57,7 @@ extern NSString * const kSettingsRSSIDisplayCell;
 extern NSString * const kSettingsAxonLiteEnabled;
 
 extern NSString * const kSettingsTypeBannerEnabled;
+extern NSString * const kSettingsNotificationIslandEnabled;
 
 extern NSString * const kSettingsGravityLiteEnabled;
 extern NSString * const kSettingsGravityLiteDockEnabled;
@@ -145,5 +146,6 @@ void settings_application_did_become_active(void);
 // Each entry: @{@"title": <label string>, @"value": <current value string>}.
 // Returns empty array when the section has no configurable rows.
 + (NSArray<NSDictionary<NSString *, NSString *> *> *)settingsSummaryForSection:(NSInteger)section;
++ (BOOL)liveWPHasSelectedVideo;
 
 @end
