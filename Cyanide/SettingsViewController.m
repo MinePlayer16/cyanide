@@ -265,6 +265,11 @@ NSString * const kSettingsAxonLiteEnabled = @"AxonLiteEnabled";
 NSString * const kSettingsTypeBannerEnabled = @"TypeBannerEnabled";
 NSString * const kSettingsNotificationIslandEnabled = @"NotificationIslandEnabled";
 NSString * const kSettingsAppSwitcherGridEnabled = @"AppSwitcherGridEnabled";
+static NSString * const kSettingsFastLockXLiteEnabled = @"FastLockXLiteEnabled";
+static NSString * const kSettingsFastLockXLiteBlockMusic = @"FastLockXLiteBlockMusic";
+static NSString * const kSettingsFastLockXLiteBlockFlashlight = @"FastLockXLiteBlockFlashlight";
+static NSString * const kSettingsFastLockXLiteBlockLowPower = @"FastLockXLiteBlockLowPower";
+static NSString * const kSettingsFastLockXLiteRetryInterval = @"FastLockXLiteRetryInterval";
 static NSString * const kSettingsHideHomeBarMaterialKitBootTime = @"HideHomeBarMaterialKitBootTime";
 
 NSString * const kSettingsGravityLiteEnabled = @"GravityLiteEnabled";
@@ -564,6 +569,15 @@ static bool settings_stop_stagestrip_registered(BOOL springboardWillDie)
     return stagestrip_stop_in_session();
 }
 
+static bool settings_stop_fastlockx_lite_registered(BOOL springboardWillDie)
+{
+    if (springboardWillDie) {
+        fastlockx_lite_forget_remote_state();
+        return true;
+    }
+    return fastlockx_lite_disable_always_on_in_session();
+}
+
 static bool settings_stop_livewp_registered(BOOL springboardWillDie)
 {
     (void)springboardWillDie;
@@ -589,6 +603,7 @@ static void settings_each_springboard_cleanup_entry(void (^block)(const Settings
         { kSettingsSnowBoardLiteEnabled, "SnowBoard Lite", settings_request_themer_stop, settings_stop_themer_registered, themer_forget_remote_state, settings_themer_running, YES, YES },
         { kSettingsLiveWPEnabled, "LiveWP", settings_request_livewp_stop, settings_stop_livewp_registered, livewp_forget_remote_state, settings_livewp_running, YES, YES },
         { kSettingsStageStripEnabled, "Stage Strip", settings_request_stagestrip_stop, settings_stop_stagestrip_registered, stagestrip_forget_remote_state, NULL, YES, YES },
+        { kSettingsFastLockXLiteEnabled, "FastLockX Lite", NULL, settings_stop_fastlockx_lite_registered, fastlockx_lite_forget_remote_state, NULL, YES, YES },
         { nil, "Kill All Apps", NULL, NULL, killallapps_forget_remote_state, NULL, NO, NO },
     };
     size_t count = sizeof(entries) / sizeof(entries[0]);
@@ -921,6 +936,11 @@ static BOOL settings_notificationisland_install_allowed(void)
 }
 
 static BOOL settings_stagestrip_install_allowed(void)
+{
+    return cyanide_private_tweaks_available() && settings_experimental_tweaks_enabled();
+}
+
+static BOOL settings_fastlockx_lite_install_allowed(void)
 {
     return cyanide_private_tweaks_available() && settings_experimental_tweaks_enabled();
 }
@@ -2423,6 +2443,34 @@ static bool settings_apply_gravitylite_from_defaults_locked(NSUserDefaults *d)
 {
     if (![d boolForKey:kSettingsGravityLiteEnabled]) return false;
     return gravitylite_apply_in_session(settings_gravitylite_config_from_defaults(d));
+}
+
+static double settings_fastlockx_lite_retry_interval(NSUserDefaults *d)
+{
+    id raw = [d objectForKey:kSettingsFastLockXLiteRetryInterval];
+    double value = [raw respondsToSelector:@selector(doubleValue)] ? [raw doubleValue] : 0.5;
+    if (!isfinite(value) || value <= 0.0) value = 0.5;
+    if (value < 0.1) value = 0.1;
+    if (value > 2.0) value = 2.0;
+    return value;
+}
+
+static FastLockXLiteConfig settings_fastlockx_lite_config_from_defaults(NSUserDefaults *d,
+                                                                        BOOL pulse,
+                                                                        BOOL unlock)
+{
+    FastLockXLiteConfig config = {
+        .pulseBiometricRetry = pulse,
+        .attemptUnlock = unlock,
+        // Blockers are UI-disabled for now; keep the backend behavior aligned
+        // so stale saved defaults don't silently change unlock behavior.
+        .blockOnMusic = false,
+        .blockOnFlashlight = false,
+        .blockOnLowPowerMode = false,
+        .diagnosticLogging = YES,
+        .retryIntervalSeconds = settings_fastlockx_lite_retry_interval(d),
+    };
+    return config;
 }
 
 static void settings_restart_gravity_motion_if_active(const char *reason)
@@ -5529,6 +5577,12 @@ void settings_register_defaults(void)
         kSettingsTypeBannerEnabled: @NO,
         kSettingsNotificationIslandEnabled: @NO,
 
+        kSettingsFastLockXLiteEnabled: @NO,
+        kSettingsFastLockXLiteBlockMusic: @NO,
+        kSettingsFastLockXLiteBlockFlashlight: @NO,
+        kSettingsFastLockXLiteBlockLowPower: @NO,
+        kSettingsFastLockXLiteRetryInterval: @0.5,
+
         kSettingsGravityLiteEnabled: @NO,
         kSettingsGravityLiteDockEnabled: @YES,
         kSettingsGravityLiteMagnitudePct: @100,
@@ -6251,6 +6305,7 @@ typedef NS_ENUM(NSInteger, SettingsSection) {
     SectionGravityLite,
     SectionAppSwitcherGrid,
     SectionIPADecryptor,
+    SectionFastLockXLite,
     SectionCount,
 };
 
@@ -6321,6 +6376,7 @@ static NSString *settings_pretty_date_for_iso(NSString *iso)
 @property (nonatomic, copy)   NSString *bundleTitle;
 @property (nonatomic, assign) BOOL changelogExpanded;
 @property (nonatomic, copy)   NSString *pendingThemeImportMode;
+- (void)forceDisableFastLockXLiteForExperimentalGateWithDefaults:(NSUserDefaults *)defaults;
 @end
 
 // Singleton delegate so MFMailCompose's host VC doesn't need to conform. Lives
@@ -6823,6 +6879,22 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
         self.pendingManualActionsReload = YES;
         return;
     }
+
+    // Returning from Patreon OAuth can change the Patreon root section row
+    // count (unlinked: 2, linked patron: 3, linked non-patron: 4) before the
+    // status notification's full reload runs. A targeted Quick Actions
+    // reload during that window makes UITableView validate the now-stale
+    // Patreon section and crash with an invalid row-count assertion.
+    if ([self.tableView numberOfSections] > RootSectionPatreon) {
+        NSInteger visiblePatreonRows = [self.tableView numberOfRowsInSection:RootSectionPatreon];
+        NSInteger desiredPatreonRows = [self tableView:self.tableView
+                                numberOfRowsInSection:RootSectionPatreon];
+        if (visiblePatreonRows != desiredPatreonRows) {
+            [self.tableView reloadData];
+            return;
+        }
+    }
+
     NSIndexSet *sections = [NSIndexSet indexSetWithIndex:RootSectionActions];
     [self.tableView reloadSections:sections withRowAnimation:UITableViewRowAnimationNone];
 }
@@ -7347,6 +7419,40 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
     ];
 }
 
+- (NSArray<NSDictionary *> *)fastLockXLiteRows
+{
+    return @[
+        @{ @"kind": @"info",
+           @"title": @"FastLockX Lite",
+           @"subtitle": @"Always On keeps the Face ID retry pulse and unlock request armed in SpringBoard until Disable, Clean Up, or respring." },
+        @{ @"kind": @"button",
+           @"title": @"Enable Always On",
+           @"subtitle": @"Keeps pickup-to-unlock armed after Cyanide closes.",
+           @"action": @"fastlockx-enable" },
+        @{ @"kind": @"button",
+           @"title": @"Disable",
+           @"subtitle": @"Stops the SpringBoard timers.",
+           @"action": @"fastlockx-disable" },
+        @{ @"kind": @"number",
+           @"key": kSettingsFastLockXLiteRetryInterval,
+           @"title": @"Retry interval",
+           @"subtitle": @"Original FastLockX defaulted to 0.5s. Always On uses this as the off→on pulse gap.",
+           @"min": @0.1, @"max": @2.0, @"step": @0.1, @"unit": @"s", @"precision": @1, @"default": @0.5 },
+        @{ @"key": kSettingsFastLockXLiteBlockMusic,
+           @"title": @"Block if media is active — In progress",
+           @"subtitle": @"In progress — not wired yet. This blocker is disabled for now.",
+           @"disabled": @YES },
+        @{ @"key": kSettingsFastLockXLiteBlockFlashlight,
+           @"title": @"Block if flashlight is on — In progress",
+           @"subtitle": @"In progress — not wired yet. This blocker is disabled for now.",
+           @"disabled": @YES },
+        @{ @"key": kSettingsFastLockXLiteBlockLowPower,
+           @"title": @"Block in Low Power Mode — In progress",
+           @"subtitle": @"In progress — not wired yet. This blocker is disabled for now.",
+           @"disabled": @YES },
+    ];
+}
+
 + (NSArray<NSDictionary<NSString *, NSString *> *> *)settingsSummaryForSection:(NSInteger)section
 {
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
@@ -7388,6 +7494,15 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
     } else if (section == SectionAppSwitcherGrid) {
         [out addObject:@{@"title": @"Switcher style",
                          @"value": settings_tweak_is_applied(kSettingsAppSwitcherGridEnabled) ? @"Grid" : @"Stock"}];
+    } else if (section == SectionFastLockXLite) {
+        BOOL alwaysOnIntent = [d boolForKey:kSettingsFastLockXLiteEnabled];
+        BOOL alwaysOnApplied = settings_tweak_is_applied(kSettingsFastLockXLiteEnabled);
+        [out addObject:@{@"title": @"Always On",
+                         @"value": alwaysOnApplied ? @"Enabled" : (alwaysOnIntent ? @"Unknown" : @"Off")}];
+        [out addObject:@{@"title": @"Retry interval",
+                         @"value": [NSString stringWithFormat:@"%.1fs", settings_fastlockx_lite_retry_interval(d)]}];
+        [out addObject:@{@"title": @"Blockers",
+                         @"value": @"In progress"}];
     } else if (section == SectionPowercuff) {
         NSString *lvl = [d stringForKey:kSettingsPowercuffLevel] ?: @"nominal";
         [out addObject:@{@"title": @"Level", @"value": lvl}];
@@ -7441,6 +7556,7 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
         case SectionTypeBanner: return self.typebannerRows;
         case SectionNotificationIsland: return self.notificationIslandRows;
         case SectionAppSwitcherGrid: return self.appSwitcherGridRows;
+        case SectionFastLockXLite: return settings_fastlockx_lite_install_allowed() ? self.fastLockXLiteRows : @[];
         case SectionGravityLite: return self.gravityLiteRows;
         case SectionLocationSim: return self.locationSimRows;
         case SectionIPADecryptor: return self.ipaDecryptorRows;
@@ -7472,6 +7588,7 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
         @{ @"title": @"TypeBanner",         @"icon": @"ellipsis.bubble.fill",                @"color": [UIColor systemTealColor],   @"section": @(SectionTypeBanner), @"indev": @YES },
         @{ @"title": @"Notification Island", @"icon": @"bell.and.waves.left.and.right.fill",  @"color": [UIColor systemOrangeColor], @"section": @(SectionNotificationIsland), @"indev": @YES },
         @{ @"title": @"IPA Decryptor",      @"icon": @"lock.open.fill",                      @"color": [UIColor systemPurpleColor], @"section": @(SectionIPADecryptor), @"indev": @YES },
+        @{ @"title": @"FastLockX Lite",     @"icon": @"lock.open.fill",                      @"color": [UIColor systemGreenColor],  @"section": @(SectionFastLockXLite), @"experimental": @YES },
 #endif
         @{ @"title": @"Gravity Lite",       @"icon": @"arrow.down.circle.fill",              @"color": [UIColor systemGreenColor],  @"section": @(SectionGravityLite) },
         @{ @"title": @"App Switcher Grid",  @"icon": @"square.grid.2x2.fill",                @"color": [UIColor systemOrangeColor], @"section": @(SectionAppSwitcherGrid) },
@@ -9041,8 +9158,8 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
 
 #if CYANIDE_PRIVATE_TWEAKS_AVAILABLE
     cell.detailTextLabel.text = on
-        ? @"Active — Signal Readouts, TypeBanner, Notification Island, Dynamic Stage Lite."
-        : @"Signal Readouts, TypeBanner, Notification Island, Dynamic Stage Lite.";
+        ? @"Active — Signal Readouts, TypeBanner, Notification Island, FastLockX Lite, Dynamic Stage Lite."
+        : @"Signal Readouts, TypeBanner, Notification Island, FastLockX Lite, Dynamic Stage Lite.";
 #else
     cell.detailTextLabel.text = on
         ? @"Active — no private experimental tweaks in this build."
@@ -9127,7 +9244,46 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
         settings_mark_tweak_applied(kSettingsStageStripEnabled, NO);
         settings_notify_package_queue_changed_async();
     }
+    [self forceDisableFastLockXLiteForExperimentalGateWithDefaults:d];
     [self reloadAfterExperimentalChange];
+}
+
+- (void)forceDisableFastLockXLiteForExperimentalGateWithDefaults:(NSUserDefaults *)d
+{
+    BOOL shouldStop = [d boolForKey:kSettingsFastLockXLiteEnabled] ||
+                      settings_tweak_is_applied(kSettingsFastLockXLiteEnabled);
+    if (!shouldStop) return;
+
+    [d setBool:NO forKey:kSettingsFastLockXLiteEnabled];
+    [d synchronize];
+    settings_notify_package_queue_changed_async();
+
+    dispatch_async(dispatch_get_global_queue(0, 0), ^{
+        BOOL actionLockAcquired = settings_try_claim_actions_lock("FastLockX Lite cleanup",
+                                                                 "[FLX] FastLockX Lite cleanup deferred: another action is running.");
+        if (!actionLockAcquired) return;
+        @try {
+            bool stopped = false;
+            if (settings_ensure_kexploit()) {
+                @synchronized (settings_rc_lock()) {
+                    if (!g_springboard_rc_ready) {
+                        settings_ensure_springboard_remote_call_locked();
+                    }
+                    if (g_springboard_rc_ready) {
+                        stopped = fastlockx_lite_disable_always_on_in_session();
+                    }
+                }
+            }
+            if (!stopped) {
+                fastlockx_lite_forget_remote_state();
+                log_user("[FLX] Experimental gate disabled; Always On will also stop on respring if timers were unreachable.\n");
+            }
+            settings_mark_tweak_applied(kSettingsFastLockXLiteEnabled, NO);
+            settings_notify_package_queue_changed_async();
+        } @finally {
+            settings_release_actions_lock();
+        }
+    });
 }
 
 - (void)reloadAfterExperimentalChange
@@ -9173,6 +9329,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
         settings_mark_tweak_applied(kSettingsStageStripEnabled, NO);
         settings_notify_package_queue_changed_async();
     }
+    [self forceDisableFastLockXLiteForExperimentalGateWithDefaults:d];
 }
 
 - (void)patreonStatusDidChange:(NSNotification *)note
@@ -9192,8 +9349,8 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
 
         [self teardownExperimentalIfNoLongerPatron];
         if (!self.isViewLoaded || self.detailMode) return;
-        // Row count for Patreon changes between 1 and 3, so a full reloadData
-        // is simpler than animating diffs.
+        // Row count for Patreon changes between unlinked/linked states, so a
+        // full reloadData is simpler than animating diffs.
         [self.tableView reloadData];
     });
 }
@@ -10015,14 +10172,16 @@ void cyanide_present_contact(UIViewController *host)
 
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"toggle" forIndexPath:dequeuePath];
     cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    BOOL rowEnabled = supported && ![row[@"disabled"] boolValue];
+    cell.userInteractionEnabled = rowEnabled;
     NSString *subtitle = row[@"subtitle"];
     if (subtitle.length > 0) {
         UIListContentConfiguration *config = [UIListContentConfiguration cellConfiguration];
         config.text = row[@"title"];
         config.secondaryText = subtitle;
         config.textToSecondaryTextVerticalPadding = 3;
-        config.textProperties.color = supported ? UIColor.labelColor : UIColor.tertiaryLabelColor;
-        config.secondaryTextProperties.color = supported ? UIColor.secondaryLabelColor : UIColor.tertiaryLabelColor;
+        config.textProperties.color = rowEnabled ? UIColor.labelColor : UIColor.tertiaryLabelColor;
+        config.secondaryTextProperties.color = rowEnabled ? UIColor.secondaryLabelColor : UIColor.tertiaryLabelColor;
         config.secondaryTextProperties.font = [UIFont systemFontOfSize:12];
         config.secondaryTextProperties.numberOfLines = 0;
         cell.contentConfiguration = config;
@@ -10030,11 +10189,11 @@ void cyanide_present_contact(UIViewController *host)
         cell.contentConfiguration = nil;
         cell.textLabel.text = row[@"title"];
         cell.textLabel.textAlignment = NSTextAlignmentNatural;
-        cell.textLabel.textColor = supported ? UIColor.labelColor : UIColor.tertiaryLabelColor;
+        cell.textLabel.textColor = rowEnabled ? UIColor.labelColor : UIColor.tertiaryLabelColor;
     }
     UISwitch *sw = [[UISwitch alloc] init];
-    sw.on = [d boolForKey:row[@"key"]];
-    sw.enabled = supported;
+    sw.on = rowEnabled && [d boolForKey:row[@"key"]];
+    sw.enabled = rowEnabled;
     sw.tag = (indexPath.section << 16) | indexPath.row;
     [sw addTarget:self action:@selector(toggleChanged:) forControlEvents:UIControlEventValueChanged];
     cell.accessoryView = sw;
@@ -10097,6 +10256,11 @@ void cyanide_present_contact(UIViewController *host)
     }
 
     NSDictionary *row = [self rowForTag:sender.tag];
+    if ([row[@"disabled"] boolValue]) {
+        sender.on = !sender.isOn;
+        printf("[SETTINGS] toggle blocked: %s is in progress\n", [row[@"key"] UTF8String]);
+        return;
+    }
     NSString *key = row[@"key"];
     [[NSUserDefaults standardUserDefaults] setBool:sender.isOn forKey:key];
     printf("[SETTINGS] toggle %s=%d\n", key.UTF8String, sender.isOn);
@@ -11606,6 +11770,132 @@ void cyanide_present_contact(UIViewController *host)
                 }
             });
         }
+        return;
+    }
+
+    if (indexPath.section == SectionFastLockXLite) {
+        if (!settings_fastlockx_lite_install_allowed()) {
+            log_user("[FLX] FastLockX Lite is unavailable in this build or experimental access is off.\n");
+            return;
+        }
+        NSDictionary *row = [self rowsForSection:indexPath.section][indexPath.row];
+        if (![row[@"kind"] isEqualToString:@"button"]) return;
+        NSString *action = row[@"action"];
+        BOOL probe = [action isEqualToString:@"fastlockx-probe"];
+        BOOL enableAlways = [action isEqualToString:@"fastlockx-enable"];
+        BOOL disableAlways = [action isEqualToString:@"fastlockx-disable"];
+        BOOL window = [action isEqualToString:@"fastlockx-window"];
+        BOOL pulse = [action isEqualToString:@"fastlockx-once"] || window;
+        BOOL unlock = [action isEqualToString:@"fastlockx-once"] ||
+                      [action isEqualToString:@"fastlockx-unlock"] ||
+                      window;
+        if (!probe && !enableAlways && !disableAlways && !pulse && !unlock) return;
+
+        [self presentActivityLog];
+        UIBackgroundTaskIdentifier bgTask = [[UIApplication sharedApplication]
+            beginBackgroundTaskWithName:@"FastLockX Lite"
+                      expirationHandler:^{
+            log_user("[FLX] Background time expired; stopping FastLockX Lite action.\n");
+        }];
+
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_global_queue(0, 0), ^{
+            BOOL actionLockAcquired = settings_try_claim_actions_lock("FastLockX Lite",
+                                                                     "[FLX] Another action is already running.");
+            if (!actionLockAcquired) {
+                if (bgTask != UIBackgroundTaskInvalid) {
+                    [[UIApplication sharedApplication] endBackgroundTask:bgTask];
+                }
+                return;
+            }
+
+            @try {
+                if (!settings_ensure_kexploit()) {
+                    log_user("[FLX] Failed: kernel primitives not acquired. Run the chain, then try again.\n");
+                    return;
+                }
+
+                NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+                @synchronized (settings_rc_lock()) {
+                    if (!settings_ensure_springboard_remote_call_locked()) {
+                        log_user("[FLX] SpringBoard not reachable; cannot send FastLockX Lite request.\n");
+                        return;
+                    }
+
+                    if (probe) {
+                        bool ok = fastlockx_lite_probe_in_session();
+                        log_user("%s FastLockX Lite probe %s.\n",
+                                 ok ? "[OK]" : "[WARN]",
+                                 ok ? "found usable primitives" : "did not find enough primitives");
+                        return;
+                    }
+
+                    if (disableAlways) {
+                        bool ok = fastlockx_lite_disable_always_on_in_session();
+                        if (ok) {
+                            [d setBool:NO forKey:kSettingsFastLockXLiteEnabled];
+                            [d synchronize];
+                            settings_mark_tweak_applied(kSettingsFastLockXLiteEnabled, NO);
+                            settings_notify_package_queue_changed_async();
+                        }
+                        log_user("%s FastLockX Lite Always On %s.\n",
+                                 ok ? "[OK]" : "[WARN]",
+                                 ok ? "disabled" : "could not be disabled; respring will stop it");
+                    } else if (enableAlways) {
+                        FastLockXLiteConfig config = settings_fastlockx_lite_config_from_defaults(d, YES, YES);
+                        config.diagnosticLogging = NO;
+                        bool ok = fastlockx_lite_enable_always_on_in_session(config);
+                        [d setBool:ok forKey:kSettingsFastLockXLiteEnabled];
+                        [d synchronize];
+                        settings_mark_tweak_applied(kSettingsFastLockXLiteEnabled, ok);
+                        settings_notify_package_queue_changed_async();
+                        log_user("%s FastLockX Lite Always On %s.\n",
+                                 ok ? "[OK]" : "[WARN]",
+                                 ok ? "enabled" : "failed to enable");
+                    } else if (window) {
+                        NSTimeInterval deadline = [NSDate timeIntervalSinceReferenceDate] + 15.0;
+                        int tick = 0;
+                        log_user("[FLX] 15s auto-unlock window started. Lock the device now and let Face ID authenticate.\n");
+                        while ([NSDate timeIntervalSinceReferenceDate] < deadline) {
+                            if (settings_cleanup_in_progress()) {
+                                log_user("[FLX] Stopping window: cleanup started.\n");
+                                break;
+                            }
+                            FastLockXLiteConfig config = settings_fastlockx_lite_config_from_defaults(d, YES, YES);
+                            config.diagnosticLogging = NO;
+                            if (tick > 0) {
+                                config.blockOnMusic = false;
+                                config.blockOnFlashlight = false;
+                                config.blockOnLowPowerMode = false;
+                            }
+                            bool ok = fastlockx_lite_run_in_session(config);
+                            tick++;
+                            printf("[FLX] window tick=%d ok=%d\n", tick, ok);
+                            usleep(300000);
+                        }
+                        log_user("[FLX] 15s auto-unlock window stopped.\n");
+                    } else {
+                        FastLockXLiteConfig config = settings_fastlockx_lite_config_from_defaults(d, pulse, unlock);
+                        bool ok = fastlockx_lite_run_in_session(config);
+                        log_user("%s FastLockX Lite request %s.\n",
+                                 ok ? "[OK]" : "[WARN]",
+                                 ok ? "completed" : "did not complete");
+                    }
+                }
+            } @finally {
+                settings_release_actions_lock();
+                if (bgTask != UIBackgroundTaskInvalid) {
+                    [[UIApplication sharedApplication] endBackgroundTask:bgTask];
+                }
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    __strong typeof(weakSelf) strongSelf = weakSelf;
+                    [strongSelf reloadSectionOrAll:SectionFastLockXLite];
+                    [[NSNotificationCenter defaultCenter]
+                        postNotificationName:kSettingsActionsDidCompleteNotification
+                                      object:nil];
+                });
+            }
+        });
         return;
     }
 

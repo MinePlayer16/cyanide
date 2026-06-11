@@ -29,7 +29,8 @@
     __has_include("private/typebanner.h") && \
     __has_include("private/notificationisland.h") && \
     __has_include("private/stagestrip.h") && \
-    __has_include("private/ipadecryptor.h")
+    __has_include("private/ipadecryptor.h") && \
+    __has_include("private/fastlockx_lite.h")
 
 #define CYANIDE_PRIVATE_TWEAKS_AVAILABLE 1
 
@@ -38,6 +39,7 @@
 #import "private/notificationisland.h"
 #import "private/stagestrip.h"
 #import "private/ipadecryptor.h"
+#import "private/fastlockx_lite.h"
 
 #else
 
@@ -45,6 +47,16 @@
 
 #define TYPEBANNER_RC_FIRST_EXCEPTION_TIMEOUT_MS 8000
 #define TYPEBANNER_RC_MOBILESMS_FIRST_EXCEPTION_TIMEOUT_MS 1000
+
+typedef struct {
+    bool pulseBiometricRetry;
+    bool attemptUnlock;
+    bool blockOnMusic;
+    bool blockOnFlashlight;
+    bool blockOnLowPowerMode;
+    bool diagnosticLogging;
+    double retryIntervalSeconds;
+} FastLockXLiteConfig;
 
 static inline bool rssidisplay_apply_in_session(bool showWifi, bool showCell)
 {
@@ -249,6 +261,32 @@ static inline void notificationisland_forget_remote_state(void)
 static inline bool notificationisland_has_remote_state(void)
 {
     return false;
+}
+
+static inline bool fastlockx_lite_probe_in_session(void)
+{
+    return false;
+}
+
+static inline bool fastlockx_lite_run_in_session(FastLockXLiteConfig config)
+{
+    (void)config;
+    return false;
+}
+
+static inline bool fastlockx_lite_enable_always_on_in_session(FastLockXLiteConfig config)
+{
+    (void)config;
+    return false;
+}
+
+static inline bool fastlockx_lite_disable_always_on_in_session(void)
+{
+    return false;
+}
+
+static inline void fastlockx_lite_forget_remote_state(void)
+{
 }
 
 static inline NSArray<NSDictionary<NSString *, NSString *> *> *ipadecryptor_installed_apps(void)

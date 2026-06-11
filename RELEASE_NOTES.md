@@ -17,15 +17,25 @@ changes into the same bullet.
 Avoid vague bullets like "Update settings", "Change project files", or
 "Misc fixes".
 
-Never mention private submodule activity, private tweak availability,
-internal/private source movement, private repository names, or private-only
-implementation details in release notes. If a private/internal change is not
-safe to describe as a public user-facing behavior change, omit it.
+It is OK to mention user-visible experimental or patron-gated tweaks when
+describing added or improved features. When announcing a new experimental
+feature, say it is available to Patrons for early access and credit original
+tweak or project authors alongside the Cyanide port author when known. Do not
+mention private submodule activity, internal/private source movement, private
+repository names, private implementation details, or commentary about which
+experimental pieces are working versus not wired. If the change cannot be
+phrased as a user-facing feature or fix without revealing private activity,
+omit it.
 
 ## Pending
 
 
 ## Released
+
+### v1.2.19 - 2026-06-11
+
+- [x] Added FastLockX Lite, available to Patrons for early access, as an experimental tool that automatically unlocks the screen once Face ID is accepted; tested on iOS 18 and iOS 26, with iOS 17 support not confirmed yet. Credits: original FastLockX author Artem Kasper and Cyanide port by zeroxjf.
+- [x] Fixed a Patreon linking crash when returning from the in-app OAuth flow.
 
 ### v1.2.18 - 2026-06-11
 

@@ -13,7 +13,10 @@
 #   VERSION=1.5.3 ./scripts/release.sh "..."            # set an explicit version
 #   TAG=v1.2.3 ./scripts/release.sh "..."               # override tag (defaults to v${VERSION})
 #   SIGNAL_RELEASE_NOTIFY=0 ./scripts/release.sh "..."  # skip Signal group post
-#   SIGNAL_BOT_DIR=/path/to/signal-bot ./scripts/release.sh "..."  # override bot config path
+#   # Signal posts default to jf-mac-mini@jf-mac-mini.local over SSH.
+#   SIGNAL_BOT_SSH_HOST=user@host ./scripts/release.sh "..."  # post via remote Signal bot
+#   SIGNAL_BOT_REMOTE_ENV='~/Bots/signal-bot/.env' ./scripts/release.sh "..."  # remote bot config
+#   SIGNAL_BOT_SSH_HOST= SIGNAL_BOT_DIR=/path/to/signal-bot ./scripts/release.sh "..."  # legacy local bot
 #
 # The release script owns versioning end-to-end: it edits MARKETING_VERSION and
 # CURRENT_PROJECT_VERSION in the xcodeproj, commits the bump (along with any
@@ -36,16 +39,40 @@ notify_signal_release() {
     local tag="$2"
     local release_url="$3"
     local notes="$4"
+    local notify_script="scripts/signal_release_notify.py"
+    local signal_ssh_host="${SIGNAL_BOT_SSH_HOST-jf-mac-mini@jf-mac-mini.local}"
     local signal_bot_dir="${SIGNAL_BOT_DIR:-/Users/johnnyfranks/Downloads/signal-bot}"
     local signal_env="${SIGNAL_BOT_ENV:-$signal_bot_dir/.env}"
+    local signal_remote_env="${SIGNAL_BOT_REMOTE_ENV:-~/Bots/signal-bot/.env}"
 
     if [ "${SIGNAL_RELEASE_NOTIFY:-1}" = "0" ]; then
         echo "==> Signal release notification disabled"
         return 0
     fi
 
-    if [ ! -f "$signal_env" ]; then
-        echo "warning: Signal notify skipped: $signal_env not found" >&2
+    if [ ! -f "$notify_script" ]; then
+        echo "warning: Signal notify skipped: $notify_script not found" >&2
+        return 0
+    fi
+
+    if [ -n "$signal_ssh_host" ]; then
+        local quoted_env quoted_version quoted_tag quoted_url quoted_notes quoted_dry_run remote_cmd
+        printf -v quoted_env "%q" "$signal_remote_env"
+        printf -v quoted_version "%q" "$version"
+        printf -v quoted_tag "%q" "$tag"
+        printf -v quoted_url "%q" "$release_url"
+        printf -v quoted_notes "%q" "$notes"
+        printf -v quoted_dry_run "%q" "${SIGNAL_RELEASE_NOTIFY_DRY_RUN:-0}"
+        remote_cmd="SIGNAL_BOT_ENV=$quoted_env CYANIDE_VERSION=$quoted_version CYANIDE_TAG=$quoted_tag CYANIDE_RELEASE_URL=$quoted_url CYANIDE_RELEASE_NOTES=$quoted_notes SIGNAL_RELEASE_NOTIFY_DRY_RUN=$quoted_dry_run python3 -"
+
+        # Non-fatal: releases should still ship if the always-on Signal bot is
+        # offline, off-network, or not yet configured for SSH.
+        # shellcheck disable=SC2206
+        local ssh_opts=(${SIGNAL_BOT_SSH_OPTIONS:-"-o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new"})
+        if ssh "${ssh_opts[@]}" "$signal_ssh_host" "$remote_cmd" < "$notify_script"; then
+            return 0
+        fi
+        echo "warning: Signal notify skipped: SSH to $signal_ssh_host failed" >&2
         return 0
     fi
 
@@ -54,79 +81,8 @@ notify_signal_release() {
     CYANIDE_TAG="$tag" \
     CYANIDE_RELEASE_URL="$release_url" \
     CYANIDE_RELEASE_NOTES="$notes" \
-    python3 - <<'PY'
-import base64
-import json
-import os
-import re
-import sys
-import urllib.error
-import urllib.request
-
-
-def parse_env(path):
-    result = {}
-    with open(path, encoding="utf-8") as handle:
-        for raw_line in handle:
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            result[key.strip()] = value.strip().strip('"').strip("'")
-    return result
-
-
-def compact_notes(notes):
-    bullets = []
-    for line in notes.splitlines():
-        item = re.sub(r"^\s*[-*]\s+", "", line).strip()
-        if item:
-            bullets.append(item)
-        if len(bullets) >= 3:
-            break
-    if not bullets and notes.strip():
-        bullets.append(" ".join(notes.split())[:180])
-    if not bullets:
-        return ""
-    return "\n\n" + "\n".join(f"• {item[:120]}" for item in bullets)
-
-
-env = parse_env(os.environ["SIGNAL_BOT_ENV"])
-signal_number = env.get("SIGNAL_NUMBER", "")
-group_id = next((item.strip() for item in env.get("TARGET_GROUP_IDS", "").split(",") if item.strip()), "")
-api_url = env.get("SIGNAL_API_URL", "http://localhost:8080").rstrip("/")
-if not signal_number or not group_id:
-    print("warning: Signal notify skipped: missing SIGNAL_NUMBER or TARGET_GROUP_IDS", file=sys.stderr)
-    raise SystemExit(0)
-
-recipient = "group." + base64.b64encode(group_id.encode()).decode()
-version = os.environ["CYANIDE_VERSION"]
-tag = os.environ["CYANIDE_TAG"]
-release_url = os.environ["CYANIDE_RELEASE_URL"]
-notes = compact_notes(os.environ.get("CYANIDE_RELEASE_NOTES", ""))
-message = f"🍏 Cyanide {version} is out\n\nRelease notes + download:\n{release_url}{notes}"
-
-body = {
-    "number": signal_number,
-    "recipients": [recipient],
-    "message": message,
-    "text_mode": "normal",
-}
-request = urllib.request.Request(
-    f"{api_url}/v2/send",
-    data=json.dumps(body).encode(),
-    headers={"Content-Type": "application/json"},
-    method="POST",
-)
-try:
-    with urllib.request.urlopen(request, timeout=20) as response:
-        response.read()
-except urllib.error.URLError as exc:
-    print(f"warning: Signal release notification failed: {exc}", file=sys.stderr)
-    raise SystemExit(0)
-
-print(f"==> posted Signal release notification for {tag}")
-PY
+    SIGNAL_RELEASE_NOTIFY_DRY_RUN="${SIGNAL_RELEASE_NOTIFY_DRY_RUN:-0}" \
+    python3 "$notify_script"
 }
 
 if ! command -v gh >/dev/null; then
