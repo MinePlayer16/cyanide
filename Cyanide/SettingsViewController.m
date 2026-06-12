@@ -7395,8 +7395,11 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
            @"title": [selected isEqualToString:@"iOS 6 Theme"] ? @"iOS 6 Theme ✓" : @"Use iOS 6 Theme",
            @"action": @"sbl-select-ios6" },
         @{ @"kind": @"button",
-           @"title": @"Import SnowBoard Theme Folder…",
-           @"action": @"sbl-import" },
+           @"title": @"Import Theme Folder…",
+           @"action": @"sbl-import-folder" },
+        @{ @"kind": @"button",
+           @"title": @"Import Theme Archive (ZIP/DEB)…",
+           @"action": @"sbl-import-archive" },
     ]];
     if (hasSelection) {
         [rows addObject:@{ @"kind": @"button",
@@ -7844,7 +7847,7 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
                @"Custom themes can be a folder of PNG files named by bundle ID, such as com.apple.mobilesafari.png, or a binary plist mapping bundle IDs to PNG data. Import copies the theme into Cyanide's Documents/Themes folder. Theme Format Guide includes examples and plist exports.";
     }
     if (s == SectionSnowBoardLite) {
-        return @"SnowBoard/IconBundles importer ported from d1y/cyanide-ios. Folder imports are copied into Cyanide's Documents/SnowBoardLite library and applied through the existing icon replacement pipeline.\n\nImport uses a local copy of the selected folder or archive, so the original theme in Files is not changed.\n\nCompatibility: when Dynamic Stage Lite is enabled, live icon repair is paused to avoid SpringBoard resprings. The selected theme still applies once.";
+        return @"SnowBoard/IconBundles importer ported from d1y/cyanide-ios. Folder imports are copied into Cyanide's Documents/SnowBoardLite library and applied through the existing icon replacement pipeline.\n\nThe import copies theme assets into Cyanide's local storage so the original theme in Files is not changed.\n\nCompatibility: when Dynamic Stage Lite is enabled, live icon repair is paused to avoid SpringBoard resprings. The selected theme still applies once.";
     }
     if (s == SectionLiveWP) {
         return @"Video wallpaper ported from d1y/cyanide-ios. Select an MP4, MOV, or M4V; Cyanide copies it into Documents/LiveWP and plays it in SpringBoard while the RemoteCall session stays alive.";
@@ -8215,7 +8218,7 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
     [hint addAction:[UIAlertAction actionWithTitle:@"Continue" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
         (void)a;
         UIDocumentPickerViewController *picker =
-            [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeFolder, UTTypePropertyList] asCopy:YES];
+            [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeFolder, UTTypePropertyList]];
         picker.delegate = self;
         picker.allowsMultipleSelection = NO;
         self.pendingThemeImportMode = @"themer";
@@ -8225,16 +8228,34 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
     [self presentViewController:hint animated:YES completion:nil];
 }
 
-- (void)presentSnowBoardLiteImporter
+- (void)presentSnowBoardLiteFolderImporter
 {
     UIAlertController *hint = [UIAlertController
-        alertControllerWithTitle:@"Import SnowBoard Theme"
-                         message:@"Choose a theme folder that contains an IconBundles directory. ZIP and DEB archives are also accepted when they contain IconBundles. Cyanide imports a local copy and leaves the original theme unchanged."
+        alertControllerWithTitle:@"Import Theme Folder"
+                         message:@"Navigate into your theme folder so you can see IconBundles inside, then tap Open.\n\nIf tapping Open does nothing, your signing tool may need \"Match provisioning identifier\" enabled, or you can use Import Theme Archive instead."
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [hint addAction:[UIAlertAction actionWithTitle:@"Continue" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
+        (void)a;
+        UIDocumentPickerViewController *picker =
+            [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeFolder]];
+        picker.delegate = self;
+        picker.allowsMultipleSelection = NO;
+        self.pendingThemeImportMode = @"snowboardlite";
+        [self presentViewController:picker animated:YES completion:nil];
+    }]];
+    [hint addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [self presentViewController:hint animated:YES completion:nil];
+}
+
+- (void)presentSnowBoardLiteArchiveImporter
+{
+    UIAlertController *hint = [UIAlertController
+        alertControllerWithTitle:@"Import Theme Archive"
+                         message:@"Pick a ZIP or DEB file that contains an IconBundles directory. Cyanide extracts and imports a local copy."
                   preferredStyle:UIAlertControllerStyleAlert];
     [hint addAction:[UIAlertAction actionWithTitle:@"Continue" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
         (void)a;
         NSArray<UTType *> *types = @[
-            UTTypeFolder,
             UTTypeZIP,
             [UTType typeWithFilenameExtension:@"deb"] ?: UTTypeData,
         ];
@@ -8557,7 +8578,20 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
 
     BOOL scoped = [url startAccessingSecurityScopedResource];
     BOOL isDir = NO;
-    [[NSFileManager defaultManager] fileExistsAtPath:url.path isDirectory:&isDir];
+    BOOL exists = [[NSFileManager defaultManager] fileExistsAtPath:url.path isDirectory:&isDir];
+    printf("[IMPORT] url=%s scoped=%d exists=%d isDir=%d mode=%s\n",
+           url.path.UTF8String, scoped, exists, isDir, mode.UTF8String);
+    if (!exists) {
+        if (scoped) [url stopAccessingSecurityScopedResource];
+        log_user("[IMPORT] Cannot access selected file. Try a different location or file provider.\n");
+        UIAlertController *ac = [UIAlertController
+            alertControllerWithTitle:@"Import Failed"
+                              message:@"The selected item could not be accessed. Try picking from a different location or file provider."
+                       preferredStyle:UIAlertControllerStyleAlert];
+        [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:ac animated:YES completion:nil];
+        return;
+    }
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSError *err = nil;
@@ -12010,8 +12044,10 @@ void cyanide_present_contact(UIViewController *host)
         NSString *action = row[@"action"];
         if ([action isEqualToString:@"sbl-select-ios6"]) {
             [self selectSnowBoardLiteIOS6Theme];
-        } else if ([action isEqualToString:@"sbl-import"]) {
-            [self presentSnowBoardLiteImporter];
+        } else if ([action isEqualToString:@"sbl-import-folder"]) {
+            [self presentSnowBoardLiteFolderImporter];
+        } else if ([action isEqualToString:@"sbl-import-archive"]) {
+            [self presentSnowBoardLiteArchiveImporter];
         } else if ([action isEqualToString:@"sbl-clear"]) {
             [self clearSnowBoardLiteTheme];
         }

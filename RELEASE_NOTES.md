@@ -32,6 +32,11 @@ omit it.
 
 ## Released
 
+### v1.2.21 - 2026-06-12
+
+- [x] Split SnowBoard Lite import into separate Folder and Archive (ZIP/DEB) options so archive imports work reliably on all sideloaded installs.
+- [x] Added a hint in the folder import dialog for sideloaded users whose signing tool needs "Match provisioning identifier" enabled.
+
 ### v1.2.20 - 2026-06-12
 
 - [x] Fixed SBCustomizer showing as still queued after a successful icon-label or layout apply.
