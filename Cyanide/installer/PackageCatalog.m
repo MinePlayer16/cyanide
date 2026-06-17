@@ -31,6 +31,8 @@ static const NSInteger kSecGravityLite      = 21;
 static const NSInteger kSecAppSwitcherGrid  = 22;
 static const NSInteger kSecIPADecryptor     = 23;
 static const NSInteger kSecFastLockXLite    = 24;
+static const NSInteger kSecQuickLoader      = 25;
+static const NSInteger kSecRepoTweaks       = 26;
 
 + (NSArray<Package *> *)allPackages
 {
@@ -325,6 +327,32 @@ static const NSInteger kSecFastLockXLite    = 24;
         appSwitcherGrid.settingsSection = kSecAppSwitcherGrid;
         appSwitcherGrid.unstableWarning = @"Beta: patches SpringBoard runtime methods in memory. Respring restores stock, but unsupported builds may glitch the app switcher or crash SpringBoard. Re-run after any respring.";
 
+        Package *quickLoader = [[Package alloc] initWithIdentifier:@"com.darksword.quickloader"
+                                           name:@"QuickLoader"
+                               shortDescription:@"Executes custom .js code"
+                                longDescription:@"A custom tweak that lets you run your .js tweaks when enabled. Applied at Run."
+                                        version:@"1.0"
+                                         author:@"Iggy05"
+                                       category:@"Other Tweaks"
+                                     symbolName:@"bolt.fill"
+                                           kind:PackageInstallKindToggle
+                                     enabledKey:kSettingsQuickLoaderEnabled
+                                          isNew:YES];
+        quickLoader.settingsSection = kSecQuickLoader;
+
+        Package *repoTweaks = [[Package alloc] initWithIdentifier:@"com.darksword.repotweaks"
+                                   name:@"RepoTweaks Store"
+                       shortDescription:@"Download and run .js tweaks from repositories"
+                        longDescription:@"Add custom GitHub JSON repo to download and run .js tweaks without recompiling the app."
+                                version:@"1.0"
+                                 author:@"Iggy05"
+                               category:@"Other Tweaks"
+                             symbolName:@"tray.and.arrow.down.fill"
+                                   kind:PackageInstallKindToggle
+                             enabledKey:kSettingsRepoTweaksEnabled
+                                  isNew:YES];
+        repoTweaks.settingsSection = kSecRepoTweaks;
+
 #if CYANIDE_PRIVATE_TWEAKS_AVAILABLE
         Package *fastLockXLite = [[Package alloc] initWithIdentifier:@"com.darksword.fastlockx-lite"
                                            name:@"FastLockX Lite"
@@ -504,6 +532,8 @@ static const NSInteger kSecFastLockXLite    = 24;
             snowboardLite,
             liveWP,
             appSwitcherGrid,
+            quickLoader,
+            repoTweaks,
         ];
     });
     return list;
