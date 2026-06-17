@@ -6543,6 +6543,9 @@ static void settings_run_actions_internal(BOOL pendingOnly)
                     }
                     log_user("[OK] SpringBoard channel open.\n");
                     cyanide_upload_log_milestone(@"springboard-remote-call-ready");
+                    //stop JS from last session
+                    quickloader_stop_in_session();
+                    repotweaks_stop_in_session();
 
                     if (runSandboxEscape && !g_springboard_sandbox_escaped) {
                         settings_progress(&step, total, "Lifting SpringBoard filesystem sandbox");
