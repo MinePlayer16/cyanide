@@ -6753,14 +6753,18 @@ static void settings_run_actions_internal(BOOL pendingOnly)
 
                     if (runQuickLoader) {
                         settings_progress(&step, total, "Applying QuickLoader...");
-                        bool ok = quickloader_apply_in_session();
-                        settings_mark_tweak_applied(kSettingsQuickLoaderEnabled, ok);
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                            bool ok = quickloader_apply_in_session();
+                            settings_mark_tweak_applied(kSettingsQuickLoaderEnabled, ok);
+                        });
                     }
 
                     if (runRepoTweaks) {
                         settings_progress(&step, total, "Applying RepoTweaks...");
-                        bool ok = repotweaks_apply_in_session();
-                        settings_mark_tweak_applied(kSettingsRepoTweaksEnabled, ok);
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                            bool ok = repotweaks_apply_in_session();
+                            settings_mark_tweak_applied(kSettingsRepoTweaksEnabled, ok);
+                        });
                     }
 
 
