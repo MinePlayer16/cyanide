@@ -6755,12 +6755,14 @@ static void settings_run_actions_internal(BOOL pendingOnly)
                     }
 
                     if (runQuickLoader) {
+                        [NSThread sleepForTimeInterval:1];
                         settings_progress(&step, total, "Applying QuickLoader...");
                         bool ok = quickloader_apply_in_session();
                         settings_mark_tweak_applied(kSettingsQuickLoaderEnabled, ok);
                     }
 
                     if (runRepoTweaks) {
+                        [NSThread sleepForTimeInterval:1];
                         settings_progress(&step, total, "Applying RepoTweaks...");
                         bool ok = repotweaks_apply_in_session();
                         settings_mark_tweak_applied(kSettingsRepoTweaksEnabled, ok);
