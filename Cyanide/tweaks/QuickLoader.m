@@ -30,6 +30,24 @@ static NSString* uint64_to_js(uint64_t val) {
     return [NSString stringWithFormat:@"0x%llx", val];
 }
 
+static NSMutableDictionary *quickloader_string_values_dictionary(id raw) {
+    NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    if (![raw isKindOfClass:NSDictionary.class]) return out;
+    [(NSDictionary *)raw enumerateKeysAndObjectsUsingBlock:^(id key, id obj, BOOL *stop) {
+        (void)stop;
+        if ([key isKindOfClass:NSString.class] && [obj isKindOfClass:NSString.class]) {
+            out[key] = obj;
+        }
+    }];
+    return out;
+}
+
+static NSString *quickloader_pref_string(NSDictionary *prefs, NSString *key) {
+    if (![prefs isKindOfClass:NSDictionary.class] || ![key isKindOfClass:NSString.class]) return @"";
+    id value = prefs[key];
+    return [value isKindOfClass:NSString.class] ? value : @"";
+}
+
 
 // ==========================================
 // Global variables for js daemon and kill switch
@@ -60,6 +78,24 @@ static void quickloader_perform_sync(dispatch_block_t block) {
     }
 }
 
+static bool quickloader_perform_sync_timeout(dispatch_block_t block, int64_t timeoutNsec) {
+    if (!block) return true;
+    if (dispatch_get_specific(&g_quickloader_queue_key)) {
+        block();
+        return true;
+    }
+
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+    dispatch_async(quickloader_js_queue(), ^{
+        block();
+        dispatch_semaphore_signal(sema);
+    });
+    dispatch_time_t deadline = timeoutNsec < 0
+        ? DISPATCH_TIME_FOREVER
+        : dispatch_time(DISPATCH_TIME_NOW, timeoutNsec);
+    return dispatch_semaphore_wait(sema, deadline) == 0;
+}
+
 
 // ==========================================
 // Session init with auto-load default settings
@@ -77,7 +113,7 @@ bool quickloader_apply_in_session() {
         // ===============================================================
         // auto-loading default settings
         // ===============================================================
-        NSMutableDictionary *savedValues = [[d dictionaryForKey:@"QuickLoaderSourceValues"] mutableCopy] ?: [NSMutableDictionary dictionary];
+        NSMutableDictionary *savedValues = quickloader_string_values_dictionary([d dictionaryForKey:@"QuickLoaderSourceValues"]);
         BOOL didUpdateDefaults = NO;
 
         NSArray *lines = [savedJS componentsSeparatedByString:@"\n"];
@@ -209,19 +245,19 @@ bool quickloader_run_js_string(NSString *jsCode) {
         context[@"r_pref_num"] = ^NSNumber*(NSString *key) {
             if (g_quickloader_shutting_down) return @(0);
             NSDictionary *prefs = [[NSUserDefaults standardUserDefaults] dictionaryForKey:@"QuickLoaderSourceValues"];
-            return @([prefs[key] doubleValue]);
+            return @([quickloader_pref_string(prefs, key) doubleValue]);
         };
 
         context[@"r_pref_str"] = ^NSString*(NSString *key) {
             if (g_quickloader_shutting_down) return @"";
             NSDictionary *prefs = [[NSUserDefaults standardUserDefaults] dictionaryForKey:@"QuickLoaderSourceValues"];
-            return prefs[key] ?: @"";
+            return quickloader_pref_string(prefs, key);
         };
 
         context[@"r_pref_bool"] = ^NSNumber*(NSString *key) {
             if (g_quickloader_shutting_down) return @(0);
             NSDictionary *prefs = [[NSUserDefaults standardUserDefaults] dictionaryForKey:@"QuickLoaderSourceValues"];
-            return @([prefs[key] boolValue]);
+            return @([quickloader_pref_string(prefs, key) boolValue]);
         };
 
         context[@"r_class"] = ^(NSString *className) {
@@ -304,7 +340,7 @@ bool quickloader_stop_in_session(void) {
     //Order timers to stop
     __sync_lock_test_and_set(&g_quickloader_shutting_down, 1);
 
-    quickloader_perform_sync(^{
+    bool stopped = quickloader_perform_sync_timeout(^{
         log_user("[QuickLoader] Clean Up: Green light, safely stopping JS timer...\n");
 
         if (g_quickloader_timers) {
@@ -318,7 +354,11 @@ bool quickloader_stop_in_session(void) {
         }
 
         g_quickloader_context = nil;
-    });
+    }, 2 * NSEC_PER_SEC);
 
-    return true;
+    if (!stopped) {
+        log_user("[QuickLoader] Clean Up timed out; the script may be stuck in a long-running loop.\n");
+    }
+
+    return stopped;
 }

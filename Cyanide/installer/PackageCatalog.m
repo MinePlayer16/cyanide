@@ -333,14 +333,13 @@ static const NSInteger kSecRepoTweaks       = 26;
                                 longDescription:@"Select a local JavaScript file from Files, configure any declared parameters, and run it through Cyanide's SpringBoard RemoteCall bridge.\n\nOnly run scripts you trust. JavaScript tweaks can send private SpringBoard messages and destabilize the device if the script is buggy."
                                         version:@"1.0"
                                          author:@"Iggy05"
-                                       category:@"Experimental"
+                                       category:@"SpringBoard Tweaks"
                                      symbolName:@"bolt.fill"
                                            kind:PackageInstallKindToggle
                                      enabledKey:kSettingsQuickLoaderEnabled
                                           isNew:YES];
         quickLoader.settingsSection = kSecQuickLoader;
-        quickLoader.experimental = YES;
-        quickLoader.unstableWarning = @"Experimental: runs user-selected JavaScript with access to Cyanide's RemoteCall helpers. Only use scripts you trust; bad scripts can crash SpringBoard.";
+        quickLoader.unstableWarning = @"Runs user-selected JavaScript with access to Cyanide's RemoteCall helpers. Only use scripts you trust; bad scripts can crash SpringBoard.";
 
         Package *repoTweaks = [[Package alloc] initWithIdentifier:@"com.darksword.repotweaks"
                                    name:@"RepoTweaks Store"
@@ -348,14 +347,13 @@ static const NSInteger kSecRepoTweaks       = 26;
                         longDescription:@"Add HTTPS JSON repositories, download JavaScript tweaks, and run selected scripts without recompiling Cyanide.\n\nOnly add repositories you trust. Cyanide rejects non-HTTPS sources and malformed package entries, but downloaded scripts still run with tweak-level privileges."
                                 version:@"1.0"
                                  author:@"Iggy05"
-                               category:@"Experimental"
+                               category:@"SpringBoard Tweaks"
                              symbolName:@"tray.and.arrow.down.fill"
                                    kind:PackageInstallKindToggle
                              enabledKey:kSettingsRepoTweaksEnabled
                                   isNew:YES];
         repoTweaks.settingsSection = kSecRepoTweaks;
-        repoTweaks.experimental = YES;
-        repoTweaks.unstableWarning = @"Experimental: downloads and runs JavaScript from user-added HTTPS sources. Use trusted repositories only; bad scripts can crash SpringBoard.";
+        repoTweaks.unstableWarning = @"Downloads and runs JavaScript from user-added HTTPS sources. Use trusted repositories only; bad scripts can crash SpringBoard.";
 
 #if CYANIDE_PRIVATE_TWEAKS_AVAILABLE
         Package *fastLockXLite = [[Package alloc] initWithIdentifier:@"com.darksword.fastlockx-lite"

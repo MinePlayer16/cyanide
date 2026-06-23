@@ -25,7 +25,7 @@ jobs:
 
       - name: Compile Cyanide (Unsigned)
         run: ./scripts/build.sh
-        
+
       - name: Upload IPA Artifact
         uses: actions/upload-artifact@v4
         with:

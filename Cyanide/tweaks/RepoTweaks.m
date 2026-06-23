@@ -8,6 +8,7 @@
 #import "remote_objc.h"
 #import "../TaskRop/RemoteCall.h"
 #import "../LogTextView.h"
+#import <CommonCrypto/CommonDigest.h>
 
 extern uint64_t r_nsstr_retained(const char *str);
 
@@ -37,6 +38,24 @@ static void repotweaks_perform_sync(dispatch_block_t block) {
     } else {
         dispatch_sync(repotweaks_js_queue(), block);
     }
+}
+
+static bool repotweaks_perform_sync_timeout(dispatch_block_t block, int64_t timeoutNsec) {
+    if (!block) return true;
+    if (dispatch_get_specific(&g_repo_queue_key)) {
+        block();
+        return true;
+    }
+
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+    dispatch_async(repotweaks_js_queue(), ^{
+        block();
+        dispatch_semaphore_signal(sema);
+    });
+    dispatch_time_t deadline = timeoutNsec < 0
+        ? DISPATCH_TIME_FOREVER
+        : dispatch_time(DISPATCH_TIME_NOW, timeoutNsec);
+    return dispatch_semaphore_wait(sema, deadline) == 0;
 }
 
 static uint64_t repo_js_to_uint64(JSValue *val) {
@@ -83,6 +102,45 @@ static NSString *repotweaks_string_or_empty(id value) {
     return [value isKindOfClass:NSString.class] ? (NSString *)value : @"";
 }
 
+NSString *repotweaks_storage_key(NSString *repoURL, NSString *tweakId) {
+    NSString *safeURL = repotweaks_string_or_empty(repoURL);
+    NSString *safeID = repotweaks_string_or_empty(tweakId);
+    NSString *input = [NSString stringWithFormat:@"%@\n%@", safeURL, safeID];
+    NSData *data = [input dataUsingEncoding:NSUTF8StringEncoding] ?: [NSData data];
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH] = {0};
+    CC_SHA256(data.bytes, (CC_LONG)data.length, digest);
+
+    NSMutableString *hex = [NSMutableString stringWithCapacity:CC_SHA256_DIGEST_LENGTH * 2];
+    for (NSUInteger i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) {
+        [hex appendFormat:@"%02x", digest[i]];
+    }
+    return hex;
+}
+
+NSString *repotweaks_enabled_defaults_key(NSString *repoURL, NSString *tweakId) {
+    return [NSString stringWithFormat:@"RepoTweakEnabled_%@", repotweaks_storage_key(repoURL, tweakId)];
+}
+
+NSString *repotweaks_script_defaults_key(NSString *repoURL, NSString *tweakId) {
+    return [NSString stringWithFormat:@"RepoTweakScript_%@", repotweaks_storage_key(repoURL, tweakId)];
+}
+
+NSString *repotweaks_values_defaults_key(NSString *repoURL, NSString *tweakId) {
+    return [NSString stringWithFormat:@"RepoTweakValues_%@", repotweaks_storage_key(repoURL, tweakId)];
+}
+
+static NSMutableDictionary *repotweaks_string_values_dictionary(id raw) {
+    NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    if (![raw isKindOfClass:NSDictionary.class]) return out;
+    [(NSDictionary *)raw enumerateKeysAndObjectsUsingBlock:^(id key, id obj, BOOL *stop) {
+        (void)stop;
+        if ([key isKindOfClass:NSString.class] && [obj isKindOfClass:NSString.class]) {
+            out[key] = obj;
+        }
+    }];
+    return out;
+}
+
 static NSDictionary *repotweaks_sanitized_tweak(id raw, NSString **errorMessage) {
     if (![raw isKindOfClass:NSDictionary.class]) {
         if (errorMessage) *errorMessage = @"Repo tweak entry is not an object.";
@@ -124,10 +182,17 @@ static NSDictionary *repotweaks_sanitized_repo(id raw, NSString **errorMessage) 
     }
 
     NSMutableArray *tweaks = [NSMutableArray array];
+    NSMutableSet<NSString *> *seenIDs = [NSMutableSet set];
     for (id rawTweak in (NSArray *)rawTweaks) {
         NSString *entryError = nil;
         NSDictionary *tweak = repotweaks_sanitized_tweak(rawTweak, &entryError);
         if (tweak) {
+            NSString *tweakID = tweak[@"id"];
+            if ([seenIDs containsObject:tweakID]) {
+                log_user("[RepoTweaks] Skipping duplicate tweak id in repo: %s\n", tweakID.UTF8String);
+                continue;
+            }
+            [seenIDs addObject:tweakID];
             [tweaks addObject:tweak];
         } else if (entryError.length > 0) {
             log_user("[RepoTweaks] Skipping invalid entry: %s\n", entryError.UTF8String);
@@ -168,6 +233,17 @@ static void repotweaks_cancel_tweak_locked(NSString *tweakID) {
     [timers removeAllObjects];
     [g_repo_timers_registry removeObjectForKey:tweakID];
     [g_repo_contexts removeObjectForKey:tweakID];
+}
+
+void repotweaks_cancel_tweak(NSString *repoURL, NSString *tweakId) {
+    NSString *storageKey = repotweaks_storage_key(repoURL, tweakId);
+    bool cancelled = repotweaks_perform_sync_timeout(^{
+        repotweaks_cancel_tweak_locked(storageKey);
+    }, 2 * NSEC_PER_SEC);
+    if (!cancelled) {
+        log_user("[RepoTweaks] Timed out stopping %s; the script may be stuck in a long-running loop.\n",
+                 repotweaks_string_or_empty(tweakId).UTF8String);
+    }
 }
 
 bool repotweaks_run_isolated_js(NSString *tweakID, NSString *tweakName, NSString *jsCode) {
@@ -329,20 +405,21 @@ bool repotweaks_apply_in_session(void) {
             NSString *tweakID = repotweaks_string_or_empty(tweak[@"id"]);
             NSString *tweakName = repotweaks_string_or_empty(tweak[@"name"]);
             if (tweakID.length == 0) continue;
+            NSString *storageKey = repotweaks_storage_key(url, tweakID);
 
-            NSString *toggleKey = [NSString stringWithFormat:@"RepoTweakEnabled_%@", tweakID];
+            NSString *toggleKey = repotweaks_enabled_defaults_key(url, tweakID);
             if (![d boolForKey:toggleKey]) {
-                repotweaks_perform_sync(^{ repotweaks_cancel_tweak_locked(tweakID); });
+                repotweaks_perform_sync(^{ repotweaks_cancel_tweak_locked(storageKey); });
                 continue;
             }
 
-            NSString *scriptKey = [NSString stringWithFormat:@"RepoTweakScript_%@", tweakID];
+            NSString *scriptKey = repotweaks_script_defaults_key(url, tweakID);
             NSString *rawJsCode = [d stringForKey:scriptKey];
             if (rawJsCode.length == 0) continue;
 
             NSMutableString *finalScript = [NSMutableString stringWithString:@"// --- REPOTWEAKS PARAMS ---\n"];
-            NSString *valuesKey = [NSString stringWithFormat:@"RepoTweakValues_%@", tweakID];
-            NSMutableDictionary *savedValues = [[d dictionaryForKey:valuesKey] mutableCopy] ?: [NSMutableDictionary dictionary];
+            NSString *valuesKey = repotweaks_values_defaults_key(url, tweakID);
+            NSMutableDictionary *savedValues = repotweaks_string_values_dictionary([d dictionaryForKey:valuesKey]);
             BOOL didUpdateDefaults = NO;
 
             for (NSString *line in [rawJsCode componentsSeparatedByString:@"\n"]) {
@@ -383,7 +460,7 @@ bool repotweaks_apply_in_session(void) {
 
             [finalScript appendString:@"// -------------------------\n\n"];
             [finalScript appendString:rawJsCode];
-            bool ok = repotweaks_run_isolated_js(tweakID, tweakName, finalScript);
+            bool ok = repotweaks_run_isolated_js(storageKey, tweakName, finalScript);
             executedAny = executedAny || ok;
         }
     }
@@ -444,7 +521,7 @@ void repotweaks_refresh_repo(NSString *repoURL, void (^completion)(BOOL success,
         __block BOOL scriptsOK = YES;
         for (NSDictionary *tweak in tweaks) {
             dispatch_group_enter(group);
-            repotweaks_download_script(tweak[@"id"], tweak[@"scriptURL"], ^(BOOL success) {
+            repotweaks_download_script(repoURL, tweak[@"id"], tweak[@"scriptURL"], ^(BOOL success) {
                 if (!success) scriptsOK = NO;
                 dispatch_group_leave(group);
             });
@@ -455,7 +532,7 @@ void repotweaks_refresh_repo(NSString *repoURL, void (^completion)(BOOL success,
     }] resume];
 }
 
-void repotweaks_download_script(NSString *tweakId, NSString *scriptURL, void (^completion)(BOOL success)) {
+void repotweaks_download_script(NSString *repoURL, NSString *tweakId, NSString *scriptURL, void (^completion)(BOOL success)) {
     void (^finish)(BOOL) = ^(BOOL success) {
         if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(success); });
     };
@@ -492,7 +569,7 @@ void repotweaks_download_script(NSString *tweakId, NSString *scriptURL, void (^c
         }
 
         NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-        [d setObject:jsCode forKey:[NSString stringWithFormat:@"RepoTweakScript_%@", tweakId]];
+        [d setObject:jsCode forKey:repotweaks_script_defaults_key(repoURL, tweakId)];
         [d synchronize];
         finish(YES);
     }] resume];
@@ -501,7 +578,7 @@ void repotweaks_download_script(NSString *tweakId, NSString *scriptURL, void (^c
 bool repotweaks_stop_in_session(void) {
     __sync_lock_test_and_set(&g_repo_shutting_down, 1);
 
-    repotweaks_perform_sync(^{
+    bool stopped = repotweaks_perform_sync_timeout(^{
         log_user("[RepoTweaks] Safe stop: stopping timers.\n");
         if (g_repo_timers_registry) {
             for (NSString *tweakID in [g_repo_timers_registry allKeys]) {
@@ -510,7 +587,11 @@ bool repotweaks_stop_in_session(void) {
             [g_repo_timers_registry removeAllObjects];
         }
         [g_repo_contexts removeAllObjects];
-    });
+    }, 2 * NSEC_PER_SEC);
 
-    return true;
+    if (!stopped) {
+        log_user("[RepoTweaks] Safe stop timed out; a script may be stuck in a long-running loop.\n");
+    }
+
+    return stopped;
 }

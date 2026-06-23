@@ -62,6 +62,7 @@
 
 // Helper converting "#FF0000" in UIColor
 static UIColor *colorFromHexString(NSString *hexString) {
+    if (![hexString isKindOfClass:NSString.class]) return [UIColor blackColor];
     NSString *cleanString = [hexString stringByReplacingOccurrencesOfString:@"#" withString:@""];
     if (cleanString.length == 0) return [UIColor blackColor];
 
@@ -76,6 +77,7 @@ static UIColor *colorFromHexString(NSString *hexString) {
 
 // Helper converting UIColor in "#FF0000"
 static NSString *hexStringFromColor(UIColor *color) {
+    if (![color isKindOfClass:UIColor.class]) return @"#000000";
     const CGFloat *components = CGColorGetComponents(color.CGColor);
     size_t count = CGColorGetNumberOfComponents(color.CGColor);
 
@@ -121,6 +123,33 @@ static NSString *settings_js_number_literal(NSString *value)
     return [NSString stringWithFormat:@"%.12g", number];
 }
 
+static NSMutableDictionary *settings_string_values_dictionary(id raw)
+{
+    NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    if (![raw isKindOfClass:NSDictionary.class]) return out;
+    [(NSDictionary *)raw enumerateKeysAndObjectsUsingBlock:^(id key, id obj, BOOL *stop) {
+        (void)stop;
+        if ([key isKindOfClass:NSString.class] && [obj isKindOfClass:NSString.class]) {
+            out[key] = obj;
+        }
+    }];
+    return out;
+}
+
+static void settings_clear_repo_tweak_defaults(NSString *repoURL, NSString *tweakID)
+{
+    if (![repoURL isKindOfClass:NSString.class] || repoURL.length == 0 ||
+        ![tweakID isKindOfClass:NSString.class] || tweakID.length == 0) {
+        return;
+    }
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    [d removeObjectForKey:repotweaks_enabled_defaults_key(repoURL, tweakID)];
+    [d removeObjectForKey:repotweaks_script_defaults_key(repoURL, tweakID)];
+    [d removeObjectForKey:repotweaks_values_defaults_key(repoURL, tweakID)];
+    [d synchronize];
+    repotweaks_cancel_tweak(repoURL, tweakID);
+}
+
 static NSDictionary *settings_repotweaks_caches(void)
 {
     id raw = [[NSUserDefaults standardUserDefaults] objectForKey:@"RepoTweaksCaches"];
@@ -150,7 +179,13 @@ static NSArray<NSDictionary *> *settings_repotweaks_tweaks_for_url(NSString *rep
     if (![raw isKindOfClass:NSArray.class]) return @[];
     NSMutableArray<NSDictionary *> *out = [NSMutableArray array];
     for (id value in (NSArray *)raw) {
-        if ([value isKindOfClass:NSDictionary.class]) [out addObject:value];
+        if ([value isKindOfClass:NSDictionary.class]) {
+            NSMutableDictionary *tweak = [(NSDictionary *)value mutableCopy];
+            if ([repoURL isKindOfClass:NSString.class] && repoURL.length > 0) {
+                tweak[@"_repoURL"] = repoURL;
+            }
+            [out addObject:tweak];
+        }
     }
     return out;
 }
@@ -163,6 +198,7 @@ static NSArray<NSDictionary *> *settings_repotweaks_tweaks_for_url(NSString *rep
 @interface RepoTweakDetailController : UITableViewController
 @property (nonatomic, strong) NSDictionary *tweak;
 @property (nonatomic, strong) NSString *tweakID;
+@property (nonatomic, strong) NSString *repoURL;
 @property (nonatomic, strong) NSString *rawScript;
 @property (nonatomic, strong) NSArray<NSDictionary *> *params;
 @property (nonatomic, strong) NSMutableDictionary *values;
@@ -175,17 +211,17 @@ static NSArray<NSDictionary *> *settings_repotweaks_tweaks_for_url(NSString *rep
     if (self) {
         self.tweak = [tweak isKindOfClass:NSDictionary.class] ? tweak : @{};
         self.tweakID = settings_string_or_empty(self.tweak[@"id"]);
+        self.repoURL = settings_string_or_empty(self.tweak[@"_repoURL"]);
         self.title = settings_string_or_empty(self.tweak[@"name"]).length ? settings_string_or_empty(self.tweak[@"name"]) : @"RepoTweak";
 
         NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
         // Retrieve js code from repo
-        NSString *scriptKey = [NSString stringWithFormat:@"RepoTweakScript_%@", self.tweakID];
+        NSString *scriptKey = repotweaks_script_defaults_key(self.repoURL, self.tweakID);
         self.rawScript = [d stringForKey:scriptKey] ?: @"";
 
         // Retrieve tweaks-specific user saved settings
-        NSString *valuesKey = [NSString stringWithFormat:@"RepoTweakValues_%@", self.tweakID];
-        NSDictionary *savedVals = [d dictionaryForKey:valuesKey];
-        self.values = savedVals ? [savedVals mutableCopy] : [NSMutableDictionary dictionary];
+        NSString *valuesKey = repotweaks_values_defaults_key(self.repoURL, self.tweakID);
+        self.values = settings_string_values_dictionary([d dictionaryForKey:valuesKey]);
 
         // Analyze @param comments in js code
         NSMutableArray *parsedParams = [NSMutableArray array];
@@ -263,12 +299,15 @@ static NSArray<NSDictionary *> *settings_repotweaks_tweaks_for_url(NSString *rep
         cell.textLabel.text = @"Enable Tweak";
 
         UISwitch *sw = [[UISwitch alloc] init];
-        NSString *toggleKey = [NSString stringWithFormat:@"RepoTweakEnabled_%@", self.tweakID];
+        NSString *toggleKey = repotweaks_enabled_defaults_key(self.repoURL, self.tweakID);
         sw.on = [d boolForKey:toggleKey];
 
         UIAction *action = [UIAction actionWithHandler:^(__kindof UIAction * _Nonnull action) {
             [d setBool:sw.isOn forKey:toggleKey];
             [d synchronize];
+            if (!sw.isOn) {
+                repotweaks_cancel_tweak(self.repoURL, self.tweakID);
+            }
         }];
         [sw addAction:action forControlEvents:UIControlEventValueChanged];
         cell.accessoryView = sw;
@@ -284,9 +323,9 @@ static NSArray<NSDictionary *> *settings_repotweaks_tweaks_for_url(NSString *rep
 
     NSString *varName = param[@"varName"];
     NSString *pType = param[@"type"];
-    NSString *currentValue = self.values[varName];
+    NSString *currentValue = settings_string_or_empty(self.values[varName]);
 
-    NSString *valuesKey = [NSString stringWithFormat:@"RepoTweakValues_%@", self.tweakID];
+    NSString *valuesKey = repotweaks_values_defaults_key(self.repoURL, self.tweakID);
 
     if ([pType isEqualToString:@"switch"]) {
         UISwitch *sw = [[UISwitch alloc] init];
@@ -444,7 +483,7 @@ static NSArray<NSDictionary *> *settings_repotweaks_tweaks_for_url(NSString *rep
     UISwitch *toggle = [[UISwitch alloc] init];
     toggle.tag = indexPath.row; // Link the switch to the tweak array index
     NSString *tweakID = settings_string_or_empty(tweak[@"id"]);
-    NSString *key = [NSString stringWithFormat:@"RepoTweakEnabled_%@", tweakID];
+    NSString *key = repotweaks_enabled_defaults_key(self.repoURL, tweakID);
     toggle.on = [[NSUserDefaults standardUserDefaults] boolForKey:key];
     [toggle addTarget:self action:@selector(toggled:) forControlEvents:UIControlEventValueChanged];
 
@@ -459,9 +498,12 @@ static NSArray<NSDictionary *> *settings_repotweaks_tweaks_for_url(NSString *rep
     NSDictionary *tweak = tweaks[sender.tag];
     NSString *tweakID = settings_string_or_empty(tweak[@"id"]);
     if (tweakID.length == 0) return;
-    NSString *key = [NSString stringWithFormat:@"RepoTweakEnabled_%@", tweakID];
+    NSString *key = repotweaks_enabled_defaults_key(self.repoURL, tweakID);
     [[NSUserDefaults standardUserDefaults] setBool:sender.on forKey:key];
     [[NSUserDefaults standardUserDefaults] synchronize];
+    if (!sender.on) {
+        repotweaks_cancel_tweak(self.repoURL, tweakID);
+    }
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -470,6 +512,9 @@ static NSArray<NSDictionary *> *settings_repotweaks_tweaks_for_url(NSString *rep
     // Handle Repo Deletion
     if (indexPath.section == 1) {
         NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+        for (NSDictionary *tweak in settings_repotweaks_tweaks_for_url(self.repoURL)) {
+            settings_clear_repo_tweak_defaults(self.repoURL, settings_string_or_empty(tweak[@"id"]));
+        }
 
         NSMutableArray *urls = [settings_repotweaks_urls() mutableCopy];
         if (!urls) urls = [NSMutableArray array];
@@ -611,7 +656,8 @@ static NSArray<NSDictionary *> *settings_repotweaks_tweaks_for_url(NSString *rep
         UISwitch *toggle = [[UISwitch alloc] init];
         toggle.tag = indexPath.row;
         NSString *tweakID = settings_string_or_empty(tweak[@"id"]);
-        NSString *key = [NSString stringWithFormat:@"RepoTweakEnabled_%@", tweakID];
+        NSString *repoURL = settings_string_or_empty(tweak[@"_repoURL"]);
+        NSString *key = repotweaks_enabled_defaults_key(repoURL, tweakID);
         toggle.on = [d boolForKey:key];
         [toggle addTarget:self action:@selector(toggled:) forControlEvents:UIControlEventValueChanged];
 
@@ -625,10 +671,14 @@ static NSArray<NSDictionary *> *settings_repotweaks_tweaks_for_url(NSString *rep
     if (sender.tag < 0 || sender.tag >= (NSInteger)self.flattenedTweaks.count) return;
     NSDictionary *tweak = self.flattenedTweaks[sender.tag];
     NSString *tweakID = settings_string_or_empty(tweak[@"id"]);
+    NSString *repoURL = settings_string_or_empty(tweak[@"_repoURL"]);
     if (tweakID.length == 0) return;
-    NSString *key = [NSString stringWithFormat:@"RepoTweakEnabled_%@", tweakID];
+    NSString *key = repotweaks_enabled_defaults_key(repoURL, tweakID);
     [[NSUserDefaults standardUserDefaults] setBool:sender.on forKey:key];
     [[NSUserDefaults standardUserDefaults] synchronize];
+    if (!sender.on) {
+        repotweaks_cancel_tweak(repoURL, tweakID);
+    }
 }
 
 //swipe to delete logic
@@ -643,6 +693,9 @@ static NSArray<NSDictionary *> *settings_repotweaks_tweaks_for_url(NSString *rep
         if (!urls) urls = [NSMutableArray array];
         if (indexPath.row >= (NSInteger)urls.count) return;
         NSString *urlToRemove = urls[indexPath.row];
+        for (NSDictionary *tweak in settings_repotweaks_tweaks_for_url(urlToRemove)) {
+            settings_clear_repo_tweak_defaults(urlToRemove, settings_string_or_empty(tweak[@"id"]));
+        }
 
         [urls removeObjectAtIndex:indexPath.row];
         [d setObject:urls forKey:@"RepoTweaksURLs"];
@@ -7811,8 +7864,7 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
         self.qlScriptName = [d stringForKey:@"QuickLoaderSourceScriptName"];
         self.qlRawScript = [d stringForKey:@"QuickLoaderSourceRawJS"];
 
-        NSDictionary *savedVals = [d dictionaryForKey:@"QuickLoaderSourceValues"];
-        self.qlValues = savedVals ? [savedVals mutableCopy] : [NSMutableDictionary dictionary];
+        self.qlValues = settings_string_values_dictionary([d dictionaryForKey:@"QuickLoaderSourceValues"]);
 
         NSMutableArray *params = [NSMutableArray array];
         NSArray *lines = [self.qlRawScript componentsSeparatedByString:@"\n"];
@@ -8861,8 +8913,8 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
         @{ @"title": @"Location Simulator", @"icon": @"location.fill",                       @"color": [UIColor systemGreenColor],  @"section": @(SectionLocationSim) },
         @{ @"title": @"SnowBoard Lite",     @"icon": @"square.stack.3d.up.fill",             @"color": [UIColor systemCyanColor],   @"section": @(SectionSnowBoardLite) },
         @{ @"title": @"LiveWP",             @"icon": @"play.rectangle.fill",                 @"color": [UIColor systemPurpleColor], @"section": @(SectionLiveWP) },
-        @{ @"title": @"QuickLoader",        @"icon": @"bolt.fill",                           @"color": [UIColor systemYellowColor], @"section": @(SectionQuickLoader), @"experimental": @YES },
-        @{ @"title": @"RepoTweaks",         @"icon": @"tray.and.arrow.down.fill",            @"color": [UIColor systemBlueColor],   @"section": @(SectionRepoTweaks), @"experimental": @YES },
+        @{ @"title": @"QuickLoader",        @"icon": @"bolt.fill",                           @"color": [UIColor systemYellowColor], @"section": @(SectionQuickLoader) },
+        @{ @"title": @"RepoTweaks",         @"icon": @"tray.and.arrow.down.fill",            @"color": [UIColor systemBlueColor],   @"section": @(SectionRepoTweaks) },
         @{ @"title": @"Powercuff",          @"icon": @"bolt.slash.fill",                     @"color": [UIColor systemOrangeColor], @"section": @(SectionPowercuff) },
         @{ @"title": @"SpringBoard Tweaks", @"icon": @"apps.iphone",                         @"color": [UIColor systemIndigoColor], @"section": @(SectionDarkSwordTweaks) },
         @{ @"title": @"Drag Coefficient",   @"icon": @"dial.medium.fill",                    @"color": [UIColor systemIndigoColor], @"section": @(SectionDragCoefficient) },
@@ -9991,7 +10043,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
     for (NSDictionary *param in self.qlParams) {
         NSString *varName = param[@"varName"];
         NSString *type = param[@"type"];
-        NSString *currentValue = self.qlValues[varName];
+        NSString *currentValue = settings_string_or_empty(self.qlValues[varName]);
         if (!settings_js_identifier_valid(varName)) continue;
 
         if ([type isEqualToString:@"switch"]) {
@@ -10650,18 +10702,6 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
         settings_mark_tweak_applied(kSettingsStageStripEnabled, NO);
         settings_notify_package_queue_changed_async();
     }
-    if ([d boolForKey:kSettingsQuickLoaderEnabled] || settings_tweak_is_applied(kSettingsQuickLoaderEnabled)) {
-        [d setBool:NO forKey:kSettingsQuickLoaderEnabled];
-        settings_mark_tweak_applied(kSettingsQuickLoaderEnabled, NO);
-        settings_notify_package_queue_changed_async();
-        settings_schedule_live_apply_for_key(kSettingsQuickLoaderEnabled);
-    }
-    if ([d boolForKey:kSettingsRepoTweaksEnabled] || settings_tweak_is_applied(kSettingsRepoTweaksEnabled)) {
-        [d setBool:NO forKey:kSettingsRepoTweaksEnabled];
-        settings_mark_tweak_applied(kSettingsRepoTweaksEnabled, NO);
-        settings_notify_package_queue_changed_async();
-        settings_schedule_live_apply_for_key(kSettingsRepoTweaksEnabled);
-    }
     [self forceDisableFastLockXLiteForExperimentalGateWithDefaults:d];
     [self reloadAfterExperimentalChange];
 }
@@ -10746,18 +10786,6 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
         [d setBool:NO forKey:kSettingsStageStripEnabled];
         settings_mark_tweak_applied(kSettingsStageStripEnabled, NO);
         settings_notify_package_queue_changed_async();
-    }
-    if ([d boolForKey:kSettingsQuickLoaderEnabled] || settings_tweak_is_applied(kSettingsQuickLoaderEnabled)) {
-        [d setBool:NO forKey:kSettingsQuickLoaderEnabled];
-        settings_mark_tweak_applied(kSettingsQuickLoaderEnabled, NO);
-        settings_notify_package_queue_changed_async();
-        settings_schedule_live_apply_for_key(kSettingsQuickLoaderEnabled);
-    }
-    if ([d boolForKey:kSettingsRepoTweaksEnabled] || settings_tweak_is_applied(kSettingsRepoTweaksEnabled)) {
-        [d setBool:NO forKey:kSettingsRepoTweaksEnabled];
-        settings_mark_tweak_applied(kSettingsRepoTweaksEnabled, NO);
-        settings_notify_package_queue_changed_async();
-        settings_schedule_live_apply_for_key(kSettingsRepoTweaksEnabled);
     }
     [self forceDisableFastLockXLiteForExperimentalGateWithDefaults:d];
 }
@@ -11610,7 +11638,7 @@ void cyanide_present_contact(UIViewController *host)
 
         NSString *varName = row[@"varName"];
         NSString *pType = row[@"paramType"];
-        NSString *currentValue = self.qlValues[varName];
+        NSString *currentValue = settings_string_or_empty(self.qlValues[varName]);
 
         if ([pType isEqualToString:@"switch"]) {
             UISwitch *sw = [[UISwitch alloc] init];
