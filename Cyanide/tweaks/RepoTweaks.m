@@ -141,6 +141,28 @@ static NSMutableDictionary *repotweaks_string_values_dictionary(id raw) {
     return out;
 }
 
+static NSString *repotweaks_pref_string(NSString *storageKey, NSString *key) {
+    if (![storageKey isKindOfClass:NSString.class] || storageKey.length == 0 ||
+        ![key isKindOfClass:NSString.class]) {
+        return @"";
+    }
+    NSString *valuesKey = [NSString stringWithFormat:@"RepoTweakValues_%@", storageKey];
+    NSDictionary *prefs = [[NSUserDefaults standardUserDefaults] dictionaryForKey:valuesKey];
+    id value = [prefs isKindOfClass:NSDictionary.class] ? prefs[key] : nil;
+    return [value isKindOfClass:NSString.class] ? value : @"";
+}
+
+static BOOL repotweaks_content_type_matches(NSHTTPURLResponse *response, NSArray<NSString *> *allowedPrefixes) {
+    if (![response isKindOfClass:NSHTTPURLResponse.class]) return YES;
+    NSString *contentType = response.allHeaderFields[@"Content-Type"];
+    if (![contentType isKindOfClass:NSString.class] || contentType.length == 0) return YES;
+    NSString *lower = contentType.lowercaseString;
+    for (NSString *prefix in allowedPrefixes) {
+        if ([lower hasPrefix:prefix]) return YES;
+    }
+    return NO;
+}
+
 static NSDictionary *repotweaks_sanitized_tweak(id raw, NSString **errorMessage) {
     if (![raw isKindOfClass:NSDictionary.class]) {
         if (errorMessage) *errorMessage = @"Repo tweak entry is not an object.";
@@ -329,10 +351,36 @@ bool repotweaks_run_isolated_js(NSString *tweakID, NSString *tweakName, NSString
             log_user("[RepoTweaks][%s] %s\n", safeName.UTF8String, [msg UTF8String]);
         };
 
+        context[@"r_pref_num"] = ^NSNumber*(NSString *key) {
+            if (g_repo_shutting_down) return @(0);
+            return @([repotweaks_pref_string(safeID, key) doubleValue]);
+        };
+
+        context[@"r_pref_str"] = ^NSString*(NSString *key) {
+            if (g_repo_shutting_down) return @"";
+            return repotweaks_pref_string(safeID, key);
+        };
+
+        context[@"r_pref_bool"] = ^NSNumber*(NSString *key) {
+            if (g_repo_shutting_down) return @(0);
+            return @([repotweaks_pref_string(safeID, key) boolValue]);
+        };
+
         context[@"r_sel"] = ^NSString*(NSString *selName) {
             if (g_repo_shutting_down) return repo_uint64_to_js(0);
-            uint64_t selPtr = (uint64_t)sel_registerName([selName UTF8String]);
+            if (![selName isKindOfClass:NSString.class]) return repo_uint64_to_js(0);
+            uint64_t selPtr = r_sel([selName UTF8String]);
             return repo_uint64_to_js(selPtr);
+        };
+
+        context[@"r_responds"] = ^() {
+            if (g_repo_shutting_down) return @(0);
+            NSArray *args = [JSContext currentArguments];
+            if (args.count < 2) return @(0);
+
+            uint64_t target = repo_js_to_uint64(args[0]);
+            NSString *selector = [args[1] toString];
+            return @(r_responds(target, [selector UTF8String]));
         };
 
         context[@"r_class"] = ^NSString*(NSString *className) {
@@ -486,9 +534,14 @@ void repotweaks_refresh_repo(NSString *repoURL, void (^completion)(BOOL success,
             return;
         }
         if ([response isKindOfClass:NSHTTPURLResponse.class]) {
-            NSInteger status = ((NSHTTPURLResponse *)response).statusCode;
+            NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
+            NSInteger status = http.statusCode;
             if (status < 200 || status >= 300) {
                 finish(NO, [NSString stringWithFormat:@"Repository returned HTTP %ld.", (long)status]);
+                return;
+            }
+            if (!repotweaks_content_type_matches(http, @[@"application/json", @"text/json", @"text/plain"])) {
+                finish(NO, @"Repository did not return JSON.");
                 return;
             }
         }
@@ -552,8 +605,13 @@ void repotweaks_download_script(NSString *repoURL, NSString *tweakId, NSString *
             return;
         }
         if ([response isKindOfClass:NSHTTPURLResponse.class]) {
-            NSInteger status = ((NSHTTPURLResponse *)response).statusCode;
+            NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
+            NSInteger status = http.statusCode;
             if (status < 200 || status >= 300) {
+                finish(NO);
+                return;
+            }
+            if (!repotweaks_content_type_matches(http, @[@"application/javascript", @"text/javascript", @"application/x-javascript", @"text/plain"])) {
                 finish(NO);
                 return;
             }

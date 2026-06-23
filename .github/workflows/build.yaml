@@ -12,8 +12,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download Public Submodules (Ignore Private)
-        run: git submodule update --init --recursive || true
+      - name: Download Public Submodules
+        run: |
+          git config submodule.Cyanide/tweaks/private.update none
+          git submodule update --init --recursive
 
       - name: Set up Xcode
         uses: maxim-lobanov/setup-xcode@v1

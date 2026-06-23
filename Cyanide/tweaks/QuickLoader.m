@@ -48,6 +48,14 @@ static NSString *quickloader_pref_string(NSDictionary *prefs, NSString *key) {
     return [value isKindOfClass:NSString.class] ? value : @"";
 }
 
+static BOOL quickloader_valid_identifier(NSString *name) {
+    if (![name isKindOfClass:NSString.class] || name.length == 0) return NO;
+    unichar first = [name characterAtIndex:0];
+    if (![[NSCharacterSet letterCharacterSet] characterIsMember:first] && first != '_' && first != '$') return NO;
+    NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$"];
+    return [name rangeOfCharacterFromSet:allowed.invertedSet].location == NSNotFound;
+}
+
 
 // ==========================================
 // Global variables for js daemon and kill switch
@@ -124,6 +132,10 @@ bool quickloader_apply_in_session() {
                     //extracting variable name and default
                     NSString *varName = [parts[1] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
                     NSString *defValue = [parts[3] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+                    if (!quickloader_valid_identifier(varName)) {
+                        log_user("[QuickLoader] Skipping invalid parameter name: %s\n", varName.UTF8String);
+                        continue;
+                    }
 
                     //if new, use .js default values
                     if (!savedValues[varName]) {
@@ -278,7 +290,8 @@ bool quickloader_run_js_string(NSString *jsCode) {
 
         context[@"r_sel"] = ^NSString*(NSString *selName) {
             if (g_quickloader_shutting_down) return uint64_to_js(0);
-            uint64_t selPtr = (uint64_t)sel_registerName([selName UTF8String]);
+            if (![selName isKindOfClass:NSString.class]) return uint64_to_js(0);
+            uint64_t selPtr = r_sel([selName UTF8String]);
             return uint64_to_js(selPtr);
         };
 
