@@ -8,10 +8,61 @@
 #import "../LogTextView.h"
 #import "../PatreonAuth.h"
 #import "../SettingsViewController.h"
+#import "../tweaks/QuickLoader.h"
+#import "../tweaks/RepoTweaks.h"
+#import <math.h>
 
 
 static NSString * const kCallRecordingDisclosureAcceptedDefault =
     @"installer.callRecordingSoundDisclosureAccepted";
+
+static NSString *pkgdetail_string_or_empty(id value)
+{
+    return [value isKindOfClass:NSString.class] ? (NSString *)value : @"";
+}
+
+static BOOL pkgdetail_js_identifier_valid(NSString *name)
+{
+    if (![name isKindOfClass:NSString.class] || name.length == 0) return NO;
+    unichar first = [name characterAtIndex:0];
+    if (![[NSCharacterSet letterCharacterSet] characterIsMember:first] && first != '_' && first != '$') return NO;
+    NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:@"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$"];
+    return [name rangeOfCharacterFromSet:allowed.invertedSet].location == NSNotFound;
+}
+
+static UIColor *pkgdetail_color_from_hex(NSString *hexString)
+{
+    if (![hexString isKindOfClass:NSString.class]) return UIColor.systemRedColor;
+    NSString *clean = [hexString stringByReplacingOccurrencesOfString:@"#" withString:@""];
+    unsigned rgb = 0;
+    if (clean.length == 0 || ![[NSScanner scannerWithString:clean] scanHexInt:&rgb]) return UIColor.systemRedColor;
+    return [UIColor colorWithRed:((rgb & 0xFF0000) >> 16) / 255.0
+                           green:((rgb & 0x00FF00) >> 8) / 255.0
+                            blue:(rgb & 0x0000FF) / 255.0
+                           alpha:1.0];
+}
+
+static NSString *pkgdetail_hex_from_color(UIColor *color)
+{
+    if (![color isKindOfClass:UIColor.class]) return @"#FF0000";
+    CGFloat r = 1.0, g = 0.0, b = 0.0, a = 1.0;
+    if (![color getRed:&r green:&g blue:&b alpha:&a]) return @"#FF0000";
+    return [NSString stringWithFormat:@"#%02lX%02lX%02lX",
+            lround(r * 255.0), lround(g * 255.0), lround(b * 255.0)];
+}
+
+static NSMutableDictionary *pkgdetail_string_values_dictionary(id raw)
+{
+    NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    if (![raw isKindOfClass:NSDictionary.class]) return out;
+    [(NSDictionary *)raw enumerateKeysAndObjectsUsingBlock:^(id key, id obj, BOOL *stop) {
+        (void)stop;
+        if ([key isKindOfClass:NSString.class] && [obj isKindOfClass:NSString.class]) {
+            out[key] = obj;
+        }
+    }];
+    return out;
+}
 
 typedef NS_ENUM(NSInteger, PackageDetailSection) {
     PackageDetailSectionWarning = 0,
@@ -19,6 +70,7 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
     PackageDetailSectionInfo,
     PackageDetailSectionAction,
     PackageDetailSectionSettings,
+    PackageDetailSectionRepoOptions,
     PackageDetailSectionDescription,
     PackageDetailSectionCount,
 };
@@ -28,6 +80,8 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
 @property (nonatomic, copy)   NSArray<NSArray<NSString *> *> *infoRows;       // [[label, value], ...]
 @property (nonatomic, copy)   NSArray<NSNumber *> *visibleSections;            // ordered PackageDetailSection values
 @property (nonatomic, copy)   NSArray<NSDictionary<NSString *, NSString *> *> *settingsSummary;
+@property (nonatomic, copy)   NSArray<NSDictionary *> *repoParams;
+@property (nonatomic, strong) NSMutableDictionary *repoValues;
 @end
 
 @implementation PackageDetailViewController
@@ -80,6 +134,62 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
     return self.package.kind == PackageInstallKindDirectTool;
 }
 
+- (BOOL)isRepoTweakPackage
+{
+    return self.package.kind == PackageInstallKindRepoTweak;
+}
+
+- (void)reloadRepoOptions
+{
+    if (![self isRepoTweakPackage]) {
+        self.repoParams = @[];
+        self.repoValues = [NSMutableDictionary dictionary];
+        return;
+    }
+
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    NSString *rawScript = [d stringForKey:repotweaks_script_defaults_key(self.package.repoURL, self.package.repoTweakID)] ?: @"";
+    NSString *valuesKey = repotweaks_values_defaults_key(self.package.repoURL, self.package.repoTweakID);
+    self.repoValues = pkgdetail_string_values_dictionary([d dictionaryForKey:valuesKey]);
+
+    NSMutableArray *params = [NSMutableArray array];
+    for (NSString *line in [rawScript componentsSeparatedByString:@"\n"]) {
+        if (![line containsString:@"@param:"]) continue;
+        NSArray *parts = [line componentsSeparatedByString:@"|"];
+        if (parts.count < 4) continue;
+        NSArray *typeParts = [parts[0] componentsSeparatedByString:@"@param:"];
+        if (typeParts.count < 2) continue;
+
+        NSString *type = [pkgdetail_string_or_empty(typeParts[1]) stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        NSString *varName = [pkgdetail_string_or_empty(parts[1]) stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        NSString *label = [pkgdetail_string_or_empty(parts[2]) stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        NSString *defValue = [pkgdetail_string_or_empty(parts[3]) stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        if (!pkgdetail_js_identifier_valid(varName)) continue;
+
+        NSMutableDictionary *param = [@{
+            @"type": type,
+            @"varName": varName,
+            @"label": label.length ? label : varName,
+            @"default": defValue,
+        } mutableCopy];
+        if (parts.count >= 5 && ([type isEqualToString:@"slider"] || [type isEqualToString:@"number"])) {
+            NSString *range = [pkgdetail_string_or_empty(parts[4]) stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+            NSArray *rangeParts = [range componentsSeparatedByString:@"-"];
+            if (rangeParts.count == 2) {
+                param[@"min"] = rangeParts[0];
+                param[@"max"] = rangeParts[1];
+            }
+        }
+        if (!self.repoValues[varName]) self.repoValues[varName] = defValue ?: @"";
+        [params addObject:param];
+    }
+    self.repoParams = params;
+    if (self.repoValues.count > 0) {
+        [d setObject:self.repoValues forKey:valuesKey];
+        [d synchronize];
+    }
+}
+
 - (NSString *)manualActionTitleForIntent:(PackageQueueIntent)intent
 {
     if (intent != PackageQueueIntentNone) {
@@ -126,6 +236,12 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
 - (NSString *)toggleStateText
 {
     PackageQueueIntent intent = [[PackageQueue sharedQueue] intentForPackage:self.package];
+    if ([self isRepoTweakPackage]) {
+        if (intent == PackageQueueIntentInstall) return @"Install Pending";
+        if (intent == PackageQueueIntentUninstall) return @"Removal Pending";
+        if (self.package.isInstalled) return @"Installed";
+        return @"Available";
+    }
     if (intent == PackageQueueIntentInstall) return @"Activation Pending";
     if (intent == PackageQueueIntentUninstall) return @"Deactivation Pending";
     if (self.package.isInstalled) return @"Installed";
@@ -292,6 +408,7 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
 {
     if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
         _package = package;
+        [self reloadRepoOptions];
         _infoRows = @[
             @[@"Author",   package.author],
             @[@"Version",  package.version],
@@ -309,6 +426,9 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
         _settingsSummary = [SettingsViewController settingsSummaryForSection:package.settingsSection];
         if (_settingsSummary.count > 0) {
             [sections addObject:@(PackageDetailSectionSettings)];
+        }
+        if (_repoParams.count > 0) {
+            [sections addObject:@(PackageDetailSectionRepoOptions)];
         }
         [sections addObject:@(PackageDetailSectionInfo)];
         [sections addObject:@(PackageDetailSectionDescription)];
@@ -376,6 +496,7 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
 - (void)viewWillAppear:(BOOL)animated
 {
     [super viewWillAppear:animated];
+    [self reloadRepoOptions];
     self.settingsSummary = [SettingsViewController settingsSummaryForSection:self.package.settingsSection];
     self.tableView.tableHeaderView = [self buildHeaderView];
     [self.tableView reloadData];
@@ -559,6 +680,9 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
         title = @"Change Video";
         tint = self.view.tintColor;
         style = UIBarButtonItemStyleDone;
+    } else if (installed && [self isRepoTweakPackage]) {
+        title = @"Remove";
+        tint = UIColor.systemRedColor;
     } else if (installed) {
         title = @"Deactivate";
         tint = UIColor.systemRedColor;
@@ -573,6 +697,9 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
         style = UIBarButtonItemStyleDone;
     } else if ([self needsLiveWPVideoBeforeInstall]) {
         title = @"Select Video";
+        style = UIBarButtonItemStyleDone;
+    } else if ([self isRepoTweakPackage]) {
+        title = @"Install";
         style = UIBarButtonItemStyleDone;
     } else {
         title = @"Activate";
@@ -636,10 +763,14 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
         return;
     } else if (self.package.isInstalled) {
         if ([self presentQueueConflictIfNeededForIntent:PackageQueueIntentUninstall]) return;
-        log_user("[INSTALLER] Pending deactivation: %s\n", self.package.name.UTF8String);
+        log_user("[INSTALLER] Pending %s: %s\n",
+                 [self isRepoTweakPackage] ? "removal" : "deactivation",
+                 self.package.name.UTF8String);
     } else {
         if ([self presentQueueConflictIfNeededForIntent:PackageQueueIntentInstall]) return;
-        log_user("[INSTALLER] Pending activation: %s\n", self.package.name.UTF8String);
+        log_user("[INSTALLER] Pending %s: %s\n",
+                 [self isRepoTweakPackage] ? "install" : "activation",
+                 self.package.name.UTF8String);
     }
     [[PackageQueue sharedQueue] toggleForPackage:self.package];
 }
@@ -686,6 +817,122 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
     [self presentViewController:alert animated:YES completion:nil];
 }
 
+- (UITableViewCell *)repoOptionCellForParam:(NSDictionary *)param
+{
+    UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
+                                                   reuseIdentifier:nil];
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    cell.textLabel.text = pkgdetail_string_or_empty(param[@"label"]);
+
+    NSString *varName = pkgdetail_string_or_empty(param[@"varName"]);
+    NSString *type = pkgdetail_string_or_empty(param[@"type"]);
+    NSString *currentValue = pkgdetail_string_or_empty(self.repoValues[varName]);
+    NSString *valuesKey = repotweaks_values_defaults_key(self.package.repoURL, self.package.repoTweakID);
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+
+    void (^saveValues)(void) = ^{
+        [d setObject:self.repoValues forKey:valuesKey];
+        if (self.package.isInstalled) {
+            if (self.package.repoNativeEnabledKey.length > 0) {
+                [self.package syncRepoTweakOptionsToNativeSettings];
+                settings_mark_tweak_needs_apply(self.package.repoNativeEnabledKey);
+            } else if (quickloader_is_repo_tweak_installed(self.package.repoURL, self.package.repoTweakID)) {
+                quickloader_refresh_active_repo_tweak();
+                settings_mark_tweak_needs_apply(kSettingsQuickLoaderEnabled);
+            }
+            [[NSNotificationCenter defaultCenter] postNotificationName:PackageQueueDidChangeNotification
+                                                                object:nil];
+        }
+        [d synchronize];
+    };
+
+    if ([type isEqualToString:@"switch"]) {
+        UISwitch *sw = [[UISwitch alloc] init];
+        sw.on = [currentValue isEqualToString:@"true"] || [currentValue boolValue];
+        [sw addAction:[UIAction actionWithHandler:^(__kindof UIAction *_) {
+            self.repoValues[varName] = sw.isOn ? @"true" : @"false";
+            saveValues();
+        }] forControlEvents:UIControlEventValueChanged];
+        cell.accessoryView = sw;
+        return cell;
+    }
+
+    if ([type isEqualToString:@"text"]) {
+        UITextField *tf = [[UITextField alloc] initWithFrame:CGRectMake(0, 0, 170, 30)];
+        tf.textAlignment = NSTextAlignmentRight;
+        tf.textColor = UIColor.secondaryLabelColor;
+        tf.text = currentValue;
+        [tf addAction:[UIAction actionWithHandler:^(__kindof UIAction *_) {
+            self.repoValues[varName] = tf.text ?: @"";
+            saveValues();
+        }] forControlEvents:UIControlEventEditingChanged];
+        cell.accessoryView = tf;
+        return cell;
+    }
+
+    if ([type isEqualToString:@"color"]) {
+        UIColorWell *well = [[UIColorWell alloc] init];
+        well.translatesAutoresizingMaskIntoConstraints = NO;
+        well.title = pkgdetail_string_or_empty(param[@"label"]);
+        well.selectedColor = pkgdetail_color_from_hex(currentValue.length ? currentValue : @"#FF0000");
+        [well addAction:[UIAction actionWithHandler:^(__kindof UIAction *_) {
+            self.repoValues[varName] = pkgdetail_hex_from_color(well.selectedColor);
+            saveValues();
+        }] forControlEvents:UIControlEventValueChanged];
+        [cell.contentView addSubview:well];
+        [NSLayoutConstraint activateConstraints:@[
+            [well.trailingAnchor constraintEqualToAnchor:cell.contentView.layoutMarginsGuide.trailingAnchor],
+            [well.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+            [well.widthAnchor constraintEqualToConstant:32.0],
+            [well.heightAnchor constraintEqualToConstant:32.0],
+        ]];
+        return cell;
+    }
+
+    if ([type isEqualToString:@"slider"] || [type isEqualToString:@"number"]) {
+        UIStackView *stack = [[UIStackView alloc] initWithFrame:CGRectMake(0, 0, 220, 30)];
+        stack.axis = UILayoutConstraintAxisHorizontal;
+        stack.spacing = 10.0;
+        stack.alignment = UIStackViewAlignmentCenter;
+
+        UISlider *slider = [[UISlider alloc] init];
+        slider.minimumValue = param[@"min"] ? [param[@"min"] floatValue] : 0.0f;
+        slider.maximumValue = param[@"max"] ? [param[@"max"] floatValue] : 1.0f;
+        float defVal = param[@"default"] ? [param[@"default"] floatValue] : slider.minimumValue;
+        slider.value = currentValue.length ? [currentValue floatValue] : defVal;
+
+        UILabel *valueLabel = [[UILabel alloc] init];
+        valueLabel.textColor = UIColor.secondaryLabelColor;
+        valueLabel.font = [UIFont systemFontOfSize:14.0];
+        [valueLabel setContentCompressionResistancePriority:UILayoutPriorityRequired
+                                                    forAxis:UILayoutConstraintAxisHorizontal];
+
+        void (^updateLabel)(float) = ^(float value) {
+            valueLabel.text = fabs(value - defVal) < 0.01
+                ? [NSString stringWithFormat:@"%.2f (Def)", value]
+                : [NSString stringWithFormat:@"%.2f", value];
+        };
+        updateLabel(slider.value);
+
+        [stack addArrangedSubview:slider];
+        [stack addArrangedSubview:valueLabel];
+
+        [slider addAction:[UIAction actionWithHandler:^(__kindof UIAction *_) {
+            updateLabel(slider.value);
+        }] forControlEvents:UIControlEventValueChanged];
+        [slider addAction:[UIAction actionWithHandler:^(__kindof UIAction *_) {
+            self.repoValues[varName] = [NSString stringWithFormat:@"%.2f", slider.value];
+            saveValues();
+        }] forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel];
+        cell.accessoryView = stack;
+        return cell;
+    }
+
+    cell.detailTextLabel.text = currentValue;
+    cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
+    return cell;
+}
+
 #pragma mark - Data source
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView
@@ -701,6 +948,7 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
         case PackageDetailSectionInfo:         return (NSInteger)[self currentInfoRows].count;
         case PackageDetailSectionAction:       return 1;
         case PackageDetailSectionSettings:     return (NSInteger)self.settingsSummary.count;
+        case PackageDetailSectionRepoOptions:  return (NSInteger)self.repoParams.count;
         case PackageDetailSectionDescription:  return 1;
         case PackageDetailSectionCount:        return 0;
     }
@@ -715,6 +963,7 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
         case PackageDetailSectionInfo:         return nil;
         case PackageDetailSectionAction:       return @"Configure";
         case PackageDetailSectionSettings:     return @"Current Settings";
+        case PackageDetailSectionRepoOptions:  return @"Options";
         case PackageDetailSectionDescription:  return nil;
         case PackageDetailSectionCount:        return nil;
     }
@@ -725,6 +974,11 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
 {
     if ([self sectionAtIndex:section] == PackageDetailSectionAction) {
         return @"Settings can be changed before or after activation.";
+    }
+    if ([self sectionAtIndex:section] == PackageDetailSectionRepoOptions) {
+        return self.package.repoTweakUsesQuickLoader
+            ? @"Saved here before install; QuickLoader applies these values when the queued package runs."
+            : @"Saved here before install; Cyanide applies these values through the native package backend.";
     }
     return nil;
 }
@@ -914,6 +1168,12 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
             cell.textLabel.text = row[@"title"];
             cell.detailTextLabel.text = row[@"value"];
             return cell;
+        }
+        case PackageDetailSectionRepoOptions: {
+            NSDictionary *param = indexPath.row < (NSInteger)self.repoParams.count
+                ? self.repoParams[indexPath.row]
+                : @{};
+            return [self repoOptionCellForParam:param];
         }
         case PackageDetailSectionAction: {
             UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"ActionCell"];

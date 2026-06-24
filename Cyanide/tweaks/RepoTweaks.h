@@ -13,6 +13,7 @@ bool repotweaks_apply_in_session(void);
 
 // Fetches the JSON from the given URL and caches it
 void repotweaks_refresh_repo(NSString *repoURL, void (^completion)(BOOL success, NSString *message));
+void repotweaks_seed_default_repos(void);
 
 NSString *repotweaks_storage_key(NSString *repoURL, NSString *tweakId);
 NSString *repotweaks_enabled_defaults_key(NSString *repoURL, NSString *tweakId);
@@ -24,5 +25,11 @@ void repotweaks_download_script(NSString *repoURL, NSString *tweakId, NSString *
 void repotweaks_cancel_tweak(NSString *repoURL, NSString *tweakId);
 
 bool repotweaks_stop_in_session(void);
+
+void repotweaks_refresh_all_sources(void (^completion)(void));
+NSUInteger repotweaks_available_update_count(void);
+NSString *repotweaks_installed_version_key(NSString *repoURL, NSString *tweakId);
+
+extern NSString * const RepoTweaksDidRefreshNotification;
 
 #endif /* RepoTweaks_h */

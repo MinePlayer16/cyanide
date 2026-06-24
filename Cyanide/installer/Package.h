@@ -39,6 +39,11 @@ typedef NS_ENUM(NSInteger, PackageInstallKind) {
     // Direct settings tool. It has a Settings bundle but no install queue,
     // active state, or PackageQueue commit step.
     PackageInstallKindDirectTool = 5,
+
+    // Dynamic package fetched from a RepoTweaks source. Known repo IDs can map
+    // to Cyanide's native tweak backends; other compatible JS snippets are
+    // imported into QuickLoader and applied through the normal run-actions path.
+    PackageInstallKindRepoTweak = 6,
 };
 
 @interface Package : NSObject
@@ -54,6 +59,12 @@ typedef NS_ENUM(NSInteger, PackageInstallKind) {
 @property (nonatomic, readonly, assign)   PackageInstallKind kind;
 @property (nonatomic, readonly, copy, nullable) NSString *enabledKey;
 @property (nonatomic, readonly, assign)   BOOL isNew;
+@property (nonatomic, readonly, copy, nullable) NSString *repoURL;
+@property (nonatomic, readonly, copy, nullable) NSString *repoTweakID;
+@property (nonatomic, readonly, copy, nullable) NSString *repoScriptURL;
+@property (nonatomic, readonly, copy, nullable) NSString *repoName;
+@property (nonatomic, readonly, copy, nullable) NSString *repoNativeEnabledKey;
+@property (nonatomic, readonly, assign) BOOL repoTweakUsesQuickLoader;
 
 // SettingsSection enum value that corresponds to this package's bundle in the
 // Settings tab. NSIntegerMax means the package has no Settings bundle
@@ -100,11 +111,22 @@ typedef NS_ENUM(NSInteger, PackageInstallKind) {
                         enabledKey:(nullable NSString *)enabledKey
                              isNew:(BOOL)isNew NS_DESIGNATED_INITIALIZER;
 
+- (instancetype)initRepoTweakWithIdentifier:(NSString *)identifier
+                                      name:(NSString *)name
+                          shortDescription:(NSString *)shortDescription
+                                   version:(NSString *)version
+                                    author:(NSString *)author
+                                  repoName:(NSString *)repoName
+                                   repoURL:(NSString *)repoURL
+                               repoTweakID:(NSString *)repoTweakID
+                              repoScriptURL:(NSString *)repoScriptURL;
+
 - (instancetype)init NS_UNAVAILABLE;
 
 - (void)install;
 - (void)uninstall;
 - (void)applyCommittedState:(BOOL)installed;
+- (void)syncRepoTweakOptionsToNativeSettings;
 
 @end
 

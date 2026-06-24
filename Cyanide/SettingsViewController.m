@@ -156,6 +156,8 @@ static NSDictionary *settings_repotweaks_caches(void)
     return [raw isKindOfClass:NSDictionary.class] ? (NSDictionary *)raw : @{};
 }
 
+static NSString * const kSettingsDefaultRepoURL = @"https://zeroxjf.github.io/cyanide-repotweaks.json";
+
 static NSArray<NSString *> *settings_repotweaks_urls(void)
 {
     id raw = [[NSUserDefaults standardUserDefaults] objectForKey:@"RepoTweaksURLs"];
@@ -488,7 +490,7 @@ static NSArray<NSDictionary *> *settings_repotweaks_tweaks_for_url(NSString *rep
     [toggle addTarget:self action:@selector(toggled:) forControlEvents:UIControlEventValueChanged];
 
     cell.accessoryView = toggle;
-    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
     return cell;
 }
 
@@ -508,6 +510,14 @@ static NSArray<NSDictionary *> *settings_repotweaks_tweaks_for_url(NSString *rep
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
+
+    if (indexPath.section == 0) {
+        NSArray *tweaks = settings_repotweaks_tweaks_for_url(self.repoURL);
+        if (indexPath.row >= (NSInteger)tweaks.count) return;
+        RepoTweakDetailController *detailVC = [[RepoTweakDetailController alloc] initWithTweak:tweaks[indexPath.row]];
+        [self.navigationController pushViewController:detailVC animated:YES];
+        return;
+    }
 
     // Handle Repo Deletion
     if (indexPath.section == 1) {
@@ -554,6 +564,20 @@ static NSArray<NSDictionary *> *settings_repotweaks_tweaks_for_url(NSString *rep
     UIBarButtonItem *addButton = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemAdd target:self action:@selector(addRepo)];
     UIBarButtonItem *refreshButton = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh target:self action:@selector(refreshAll)];
     self.navigationItem.rightBarButtonItems = @[addButton, refreshButton];
+
+    repotweaks_seed_default_repos();
+    if ([settings_repotweaks_urls() containsObject:kSettingsDefaultRepoURL]) {
+        NSDictionary *repo = settings_repotweaks_repo_for_url(kSettingsDefaultRepoURL);
+        NSArray *tweaks = repo[@"tweaks"];
+        if (![tweaks isKindOfClass:NSArray.class] || tweaks.count == 0) {
+            __weak typeof(self) weakSelf = self;
+            repotweaks_refresh_repo(kSettingsDefaultRepoURL, ^(BOOL success, NSString *message) {
+                (void)success;
+                (void)message;
+                [weakSelf updateData];
+            });
+        }
+    }
 }
 
 // auto refresh (there was a bug and I had to go back to the page and it would not refresh the UI without this)
@@ -662,7 +686,7 @@ static NSArray<NSDictionary *> *settings_repotweaks_tweaks_for_url(NSString *rep
         [toggle addTarget:self action:@selector(toggled:) forControlEvents:UIControlEventValueChanged];
 
         cell.accessoryView = toggle;
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        cell.selectionStyle = UITableViewCellSelectionStyleDefault;
     }
     return cell;
 }
@@ -1564,6 +1588,11 @@ BOOL settings_tweak_is_applied(NSString *key)
         if ([set containsObject:key]) return YES;
     }
     return settings_persisted_applied(key);
+}
+
+void settings_mark_tweak_needs_apply(NSString *key)
+{
+    settings_mark_tweak_applied(key, NO);
 }
 
 static BOOL settings_clear_all_applied_locked(void)
@@ -6733,6 +6762,7 @@ void settings_register_defaults(void)
         kSettingsNanoMinPairingChipID: @(kNanoDefaultMinPairingChipID),
         kSettingsNanoMinQuickSwitch:   @(kNanoDefaultMinQuickSwitch),
     }];
+    repotweaks_seed_default_repos();
     if (!cyanide_private_tweaks_available()) {
         BOOL changed = NO;
         NSArray<NSString *> *privateKeys = @[
@@ -7912,6 +7942,7 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
 
     // The main button
     [rows addObject:@{ @"kind": @"button", @"action": @"quickloader-run-js", @"title": @"Select .js Tweak" }];
+    [rows addObject:@{ @"kind": @"button", @"action": @"quickloader-open-sources", @"title": @"📦 Open Sources Tab" }];
 
     //filename on screen
     NSString *filename = self.qlScriptName ?: [[NSUserDefaults standardUserDefaults] stringForKey:@"QuickLoaderSourceScriptName"];
@@ -8104,7 +8135,8 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
     NSUInteger installerIdx = NSNotFound;
     for (NSUInteger i = 0; i < tab.viewControllers.count; i++) {
         UIViewController *vc = tab.viewControllers[i];
-        if ([vc.tabBarItem.title isEqualToString:@"Installer"]) {
+        if ([vc.tabBarItem.title isEqualToString:@"Packages"] ||
+            [vc.tabBarItem.title isEqualToString:@"Installer"]) {
             installerIdx = i;
             break;
         }
@@ -8112,6 +8144,19 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
     [settingsNav popToRootViewControllerAnimated:NO];
     if (installerIdx != NSNotFound) {
         tab.selectedIndex = installerIdx;
+    }
+}
+
+- (void)selectBottomTabNamed:(NSString *)title
+{
+    UITabBarController *tab = self.tabBarController;
+    if (![tab isKindOfClass:UITabBarController.class]) return;
+    for (NSUInteger i = 0; i < tab.viewControllers.count; i++) {
+        UIViewController *vc = tab.viewControllers[i];
+        if ([vc.tabBarItem.title isEqualToString:title]) {
+            tab.selectedIndex = i;
+            return;
+        }
     }
 }
 
@@ -13623,6 +13668,9 @@ void cyanide_present_contact(UIViewController *host)
             dp.delegate = self;
             [self presentViewController:dp animated:YES completion:nil];
             return;
+        } else if ([action isEqualToString:@"quickloader-open-sources"]) {
+            [self selectBottomTabNamed:@"Sources"];
+            return;
         }
         return;
     }
@@ -13636,8 +13684,7 @@ void cyanide_present_contact(UIViewController *host)
         NSString *action = row[@"action"];
 
         if ([action isEqualToString:@"repotweaks-open-manager"]) {
-            RepoManagerController *vc = [[RepoManagerController alloc] initWithStyle:UITableViewStyleGrouped];
-            [self.navigationController pushViewController:vc animated:YES];
+            [self selectBottomTabNamed:@"Sources"];
         }
         return;
     }
@@ -13672,7 +13719,7 @@ void cyanide_present_contact(UIViewController *host)
 
 - (NSArray<NSDictionary *> *)repoTweaksRows {
     return @[
-        @{ @"kind": @"button", @"action": @"repotweaks-open-manager", @"title": @"📦 Open Repo Manager" }
+        @{ @"kind": @"button", @"action": @"repotweaks-open-manager", @"title": @"📦 Open Sources Tab" }
     ];
 }
 

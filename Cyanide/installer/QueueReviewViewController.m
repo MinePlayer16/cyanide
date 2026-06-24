@@ -43,7 +43,7 @@ typedef NS_ENUM(NSInteger, QueueReviewSection) {
 
     self.emptyLabel = [[UILabel alloc] init];
     self.emptyLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    self.emptyLabel.text = @"No pending changes\nQueue packages from the Installer tab";
+    self.emptyLabel.text = @"No pending changes\nQueue packages from the Packages tab";
     self.emptyLabel.font = [UIFont systemFontOfSize:16.0 weight:UIFontWeightMedium];
     self.emptyLabel.textColor = UIColor.tertiaryLabelColor;
     self.emptyLabel.textAlignment = NSTextAlignmentCenter;
@@ -304,6 +304,8 @@ typedef NS_ENUM(NSInteger, QueueReviewSection) {
                 label = @"Silence";
             } else if (allSameKind && commonKind == PackageInstallKindHideHomeBar) {
                 label = @"Hide";
+            } else if (allSameKind && commonKind == PackageInstallKindRepoTweak) {
+                label = @"Install";
             } else {
                 label = @"Activate";
             }
@@ -317,6 +319,8 @@ typedef NS_ENUM(NSInteger, QueueReviewSection) {
                 label = @"Restore";
             } else if (allSameKind && commonKind == PackageInstallKindHideHomeBar) {
                 label = @"Restore";
+            } else if (allSameKind && commonKind == PackageInstallKindRepoTweak) {
+                label = @"Remove";
             } else {
                 label = @"Deactivate";
             }
@@ -335,7 +339,7 @@ typedef NS_ENUM(NSInteger, QueueReviewSection) {
             return @"Hide Home Bar must run by itself because it edits the system home-indicator asset and then needs a respring. Run it alone first, then apply other tweaks after the respring.";
         case QueueReviewSectionReApply:
             if ([self reApplyPackages].count == 0) return nil;
-            return @"These are already installed, not new pending changes. Confirming re-runs the chain so RemoteCall-backed tweaks come back after a force-quit. To stop one from running, deactivate it from the Installer tab, or use Reset All Packages in Settings → Quick Actions.";
+            return @"These are already installed, not new pending changes. Confirming re-runs the chain so RemoteCall-backed tweaks come back after a force-quit. To stop one from running, deactivate it from the Packages tab, or use Reset All Packages in Settings → Quick Actions.";
         default:
             return nil;
     }
@@ -386,6 +390,12 @@ typedef NS_ENUM(NSInteger, QueueReviewSection) {
                     cell.detailTextLabel.text = @"Runs alone; respring required";
                     cell.detailTextLabel.textColor = UIColor.systemOrangeColor;
                     break;
+                case PackageInstallKindRepoTweak:
+                    cell.detailTextLabel.text = pkg.repoTweakUsesQuickLoader
+                        ? @"QuickLoader install pending"
+                        : @"Native package install pending";
+                    cell.detailTextLabel.textColor = UIColor.systemGreenColor;
+                    break;
                 default:
                     cell.detailTextLabel.text = @"Activation pending";
                     cell.detailTextLabel.textColor = UIColor.systemGreenColor;
@@ -409,6 +419,12 @@ typedef NS_ENUM(NSInteger, QueueReviewSection) {
                 case PackageInstallKindHideHomeBar:
                     cell.detailTextLabel.text = @"Pending respring restore";
                     cell.detailTextLabel.textColor = UIColor.systemGreenColor;
+                    break;
+                case PackageInstallKindRepoTweak:
+                    cell.detailTextLabel.text = pkg.repoTweakUsesQuickLoader
+                        ? @"QuickLoader removal pending"
+                        : @"Native package removal pending";
+                    cell.detailTextLabel.textColor = UIColor.systemRedColor;
                     break;
                 default:
                     cell.detailTextLabel.text = @"Deactivation pending";
@@ -440,7 +456,7 @@ typedef NS_ENUM(NSInteger, QueueReviewSection) {
 {
     // Swipe-to-remove only applies to the pending queue rows. "Will Re-Apply"
     // is informational — to drop one, the user uninstalls it from the
-    // Installer tab or runs Reset All Packages.
+    // Packages tab or runs Reset All Packages.
     QueueReviewSection s = (QueueReviewSection)indexPath.section;
     if (s != QueueReviewSectionInstall && s != QueueReviewSectionUninstall) return nil;
 

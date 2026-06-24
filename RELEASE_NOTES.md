@@ -29,15 +29,17 @@ omit it.
 
 ## Pending
 
-- [ ] Added QuickLoader and RepoTweaks JavaScript tweak runners with local file imports and HTTPS repository sources.
-- [ ] Fixed kernel setup hanging after IOSurface mapping creation fails; Cyanide now shows a clean failure instead of spinning.
-
-- [ ] Fixed SnowBoard Lite causing delayed SpringBoard resprings by keeping live repair active while releasing the SpringBoard channel between repair ticks.
-- [ ] Fixed SBCustomizer staying queued after a successful Home Screen Layout apply when Cyanide is relaunched during the run.
-- [ ] Fixed SpringBoard crashes on vphone while applying SBCustomizer by routing SpringBoard tweak calls through the vphone bridge more safely.
-- [ ] Fixed SBCustomizer setting changes not re-queueing a refresh after SBCustomizer had already been applied once.
 
 ## Released
+
+### v1.2.23 - 2026-06-23
+
+- [x] Added a Home tab with What's New, JavaScript Tweaks and RemoteCall Tweaks overviews, and community links.
+- [x] Redesigned Packages as a category browser — tap a category to see its tweaks.
+- [x] Added JavaScript tweak support by @MinePlayer16: QuickLoader for local .js files and an online Sources tab for HTTPS repos, with the zeroxjf repo (including Hide Dock) pre-installed.
+- [x] Added developer documentation in the Sources tab for writing JS tweaks and setting up a repo, with copy and share options.
+- [x] Added automatic source refresh with update detection badges on the Sources tab.
+- [x] Fixed JS runner stalls, SBCustomizer queue/apply issues, SnowBoard Lite respring delays, and kernel setup hangs on IOSurface mapping failures. Not all reported bugs are addressed yet, but this update should bring more stability overall.
 
 ### v1.2.22 - 2026-06-12
 

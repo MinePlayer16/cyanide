@@ -103,6 +103,7 @@ extern NSString * const kSettingsActionsDidCompleteMessageKey;
 // applied in this app session. Cleared on launch, on cleanup, and whenever the
 // SpringBoard RemoteCall session goes away.
 BOOL settings_tweak_is_applied(NSString *key);
+void settings_mark_tweak_needs_apply(NSString *key);
 
 void settings_register_defaults(void);
 BOOL settings_device_supported(void);
@@ -145,9 +146,9 @@ void settings_application_did_become_active(void);
 - (instancetype)initWithNibName:(nullable NSString *)nibNameOrNil bundle:(nullable NSBundle *)nibBundleOrNil NS_UNAVAILABLE;
 
 // When set on a bundle-detail SettingsViewController launched from the
-// Installer's "Customize" row, the nav bar shows a left-side back button
+// Packages' "Customize" row, the nav bar shows a left-side back button
 // ("← <package name>") that pops Settings to root and switches the user
-// back to the Installer tab — so the install action stays one tap away
+// back to the Packages tab — so the install action stays one tap away
 // after customizing.
 @property (nonatomic, copy, nullable) NSString *installerReturnPackageName;
 

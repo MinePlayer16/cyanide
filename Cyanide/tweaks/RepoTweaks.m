@@ -9,35 +9,95 @@
 #import "../TaskRop/RemoteCall.h"
 #import "../LogTextView.h"
 #import <CommonCrypto/CommonDigest.h>
+#import <math.h>
+#import <pthread.h>
 
 extern uint64_t r_nsstr_retained(const char *str);
 
 static const NSUInteger kRepoTweaksMaxRepoBytes = 512 * 1024;
 static const NSUInteger kRepoTweaksMaxScriptBytes = 512 * 1024;
+static NSString * const kRepoTweaksDefaultRepoURL = @"https://zeroxjf.github.io/cyanide-repotweaks.json";
+static NSString * const kRepoTweaksDefaultReposSeedVersionKey = @"RepoTweaksDefaultReposSeedVersion";
+static NSString * const kRepoTweaksDefaultReposSeedVersion = @"3";
 
 static NSMutableDictionary<NSString *, JSContext *> *g_repo_contexts = nil;
 static NSMutableDictionary<NSString *, NSMutableDictionary<NSNumber *, id> *> *g_repo_timers_registry = nil;
 static int g_repo_timer_id_counter = 0;
-static volatile int g_repo_shutting_down = 0;
+static int g_repo_shutting_down = 0;
 static char g_repo_queue_key;
+static pthread_mutex_t g_repo_queue_lock = PTHREAD_MUTEX_INITIALIZER;
+static dispatch_queue_t g_repo_queue = nil;
+static uint64_t g_repo_generation = 1;
 
-static dispatch_queue_t repotweaks_js_queue(void) {
-    static dispatch_queue_t q;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        q = dispatch_queue_create("com.zeroxjf.cyanide.repotweaks.js", DISPATCH_QUEUE_SERIAL);
-        dispatch_queue_set_specific(q, &g_repo_queue_key, &g_repo_queue_key, NULL);
-    });
+static dispatch_queue_t repotweaks_create_js_queue_locked(void) {
+    NSString *label = [NSString stringWithFormat:@"com.zeroxjf.cyanide.repotweaks.js.%llu",
+                       (unsigned long long)g_repo_generation];
+    dispatch_queue_t q = dispatch_queue_create(label.UTF8String, DISPATCH_QUEUE_SERIAL);
+    dispatch_queue_set_specific(q, &g_repo_queue_key, &g_repo_queue_key, NULL);
     return q;
 }
 
-static void repotweaks_perform_sync(dispatch_block_t block) {
-    if (!block) return;
-    if (dispatch_get_specific(&g_repo_queue_key)) {
-        block();
-    } else {
-        dispatch_sync(repotweaks_js_queue(), block);
+static dispatch_queue_t repotweaks_js_queue(void) {
+    pthread_mutex_lock(&g_repo_queue_lock);
+    if (!g_repo_queue) {
+        g_repo_queue = repotweaks_create_js_queue_locked();
     }
+    dispatch_queue_t q = g_repo_queue;
+    pthread_mutex_unlock(&g_repo_queue_lock);
+    return q;
+}
+
+static uint64_t repotweaks_current_generation(void) {
+    pthread_mutex_lock(&g_repo_queue_lock);
+    uint64_t generation = g_repo_generation;
+    pthread_mutex_unlock(&g_repo_queue_lock);
+    return generation;
+}
+
+static void repotweaks_set_shutting_down(BOOL shuttingDown) {
+    pthread_mutex_lock(&g_repo_queue_lock);
+    g_repo_shutting_down = shuttingDown ? 1 : 0;
+    pthread_mutex_unlock(&g_repo_queue_lock);
+}
+
+static uint64_t repotweaks_begin_apply_generation(void) {
+    pthread_mutex_lock(&g_repo_queue_lock);
+    g_repo_generation++;
+    if (g_repo_generation == 0) g_repo_generation = 1;
+    g_repo_shutting_down = 0;
+    if (!g_repo_queue) {
+        g_repo_queue = repotweaks_create_js_queue_locked();
+    }
+    uint64_t generation = g_repo_generation;
+    pthread_mutex_unlock(&g_repo_queue_lock);
+    return generation;
+}
+
+static BOOL repotweaks_generation_is_current(uint64_t generation) {
+    pthread_mutex_lock(&g_repo_queue_lock);
+    BOOL current = (generation == g_repo_generation);
+    pthread_mutex_unlock(&g_repo_queue_lock);
+    return current;
+}
+
+static BOOL repotweaks_generation_is_active(uint64_t generation) {
+    pthread_mutex_lock(&g_repo_queue_lock);
+    BOOL active = !g_repo_shutting_down && generation == g_repo_generation;
+    pthread_mutex_unlock(&g_repo_queue_lock);
+    return active;
+}
+
+static void repotweaks_abandon_js_queue_after_timeout(const char *reason, BOOL shuttingDown) {
+    pthread_mutex_lock(&g_repo_queue_lock);
+    g_repo_generation++;
+    if (g_repo_generation == 0) g_repo_generation = 1;
+    g_repo_shutting_down = shuttingDown ? 1 : 0;
+    g_repo_queue = repotweaks_create_js_queue_locked();
+    g_repo_contexts = nil;
+    g_repo_timers_registry = nil;
+    pthread_mutex_unlock(&g_repo_queue_lock);
+    log_user("[RepoTweaks] Abandoned wedged JS queue after %s; future runs will use a fresh queue.\n",
+             reason ? reason : "timeout");
 }
 
 static bool repotweaks_perform_sync_timeout(dispatch_block_t block, int64_t timeoutNsec) {
@@ -152,6 +212,34 @@ static NSString *repotweaks_pref_string(NSString *storageKey, NSString *key) {
     return [value isKindOfClass:NSString.class] ? value : @"";
 }
 
+static BOOL repotweaks_seed_default_values_for_script(NSUserDefaults *d, NSString *repoURL, NSString *tweakId, NSString *jsCode) {
+    if (![jsCode isKindOfClass:NSString.class] || jsCode.length == 0) return NO;
+
+    NSString *valuesKey = repotweaks_values_defaults_key(repoURL, tweakId);
+    NSMutableDictionary *values = repotweaks_string_values_dictionary([d dictionaryForKey:valuesKey]);
+    BOOL changed = NO;
+
+    for (NSString *line in [jsCode componentsSeparatedByString:@"\n"]) {
+        if (![line containsString:@"@param:"]) continue;
+        NSArray *parts = [line componentsSeparatedByString:@"|"];
+        if (parts.count < 4) continue;
+
+        NSString *varName = [parts[1] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        NSString *defValue = [parts[3] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        if (!repotweaks_valid_identifier(varName)) continue;
+
+        if (![values[varName] isKindOfClass:NSString.class]) {
+            values[varName] = defValue ?: @"";
+            changed = YES;
+        }
+    }
+
+    if (changed) {
+        [d setObject:values forKey:valuesKey];
+    }
+    return changed;
+}
+
 static BOOL repotweaks_content_type_matches(NSHTTPURLResponse *response, NSArray<NSString *> *allowedPrefixes) {
     if (![response isKindOfClass:NSHTTPURLResponse.class]) return YES;
     NSString *contentType = response.allHeaderFields[@"Content-Type"];
@@ -247,6 +335,49 @@ static NSDictionary *repotweaks_saved_caches(NSUserDefaults *d) {
     return [raw isKindOfClass:NSDictionary.class] ? raw : @{};
 }
 
+void repotweaks_seed_default_repos(void) {
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    NSMutableArray *urls = [[repotweaks_saved_urls(d) mutableCopy] ?: [NSMutableArray array] mutableCopy];
+    NSMutableDictionary *caches = [[repotweaks_saved_caches(d) mutableCopy] ?: [NSMutableDictionary dictionary] mutableCopy];
+    NSString *seedVersion = [d stringForKey:kRepoTweaksDefaultReposSeedVersionKey];
+    BOOL firstSeedForVersion = ![seedVersion isEqualToString:kRepoTweaksDefaultReposSeedVersion];
+    BOOL changed = NO;
+
+    if (firstSeedForVersion && ![urls containsObject:kRepoTweaksDefaultRepoURL]) {
+        [urls addObject:kRepoTweaksDefaultRepoURL];
+        changed = YES;
+    }
+
+    if ([urls containsObject:kRepoTweaksDefaultRepoURL] && ![caches[kRepoTweaksDefaultRepoURL] isKindOfClass:NSDictionary.class]) {
+        caches[kRepoTweaksDefaultRepoURL] = @{
+            @"repoName": @"zeroxjf",
+            @"author": @"zeroxjf",
+            @"tweaks": @[],
+        };
+        changed = YES;
+    }
+
+    if (firstSeedForVersion) {
+        [d setObject:kRepoTweaksDefaultReposSeedVersion forKey:kRepoTweaksDefaultReposSeedVersionKey];
+        changed = YES;
+    }
+    if (changed) {
+        [d setObject:urls forKey:@"RepoTweaksURLs"];
+        [d setObject:caches forKey:@"RepoTweaksCaches"];
+        [d synchronize];
+    }
+
+    NSDictionary *repo = repotweaks_saved_caches(d)[kRepoTweaksDefaultRepoURL];
+    NSArray *tweaks = [repo isKindOfClass:NSDictionary.class] ? repo[@"tweaks"] : nil;
+    if (firstSeedForVersion || ![tweaks isKindOfClass:NSArray.class] || tweaks.count == 0) {
+        repotweaks_refresh_repo(kRepoTweaksDefaultRepoURL, ^(BOOL success, NSString *message) {
+            if (!success) {
+                log_user("[RepoTweaks] Default source refresh failed: %s\n", (message ?: @"Download failed.").UTF8String);
+            }
+        });
+    }
+}
+
 static void repotweaks_cancel_tweak_locked(NSString *tweakID) {
     NSMutableDictionary *timers = g_repo_timers_registry[tweakID];
     for (id timerSource in timers.allValues) {
@@ -259,12 +390,15 @@ static void repotweaks_cancel_tweak_locked(NSString *tweakID) {
 
 void repotweaks_cancel_tweak(NSString *repoURL, NSString *tweakId) {
     NSString *storageKey = repotweaks_storage_key(repoURL, tweakId);
+    uint64_t cancelGeneration = repotweaks_current_generation();
     bool cancelled = repotweaks_perform_sync_timeout(^{
+        if (!repotweaks_generation_is_current(cancelGeneration)) return;
         repotweaks_cancel_tweak_locked(storageKey);
     }, 2 * NSEC_PER_SEC);
     if (!cancelled) {
         log_user("[RepoTweaks] Timed out stopping %s; the script may be stuck in a long-running loop.\n",
                  repotweaks_string_or_empty(tweakId).UTF8String);
+        repotweaks_abandon_js_queue_after_timeout("cancel timeout", NO);
     }
 }
 
@@ -277,8 +411,10 @@ bool repotweaks_run_isolated_js(NSString *tweakID, NSString *tweakName, NSString
     __block bool ok = true;
     NSString *safeID = [tweakID copy];
     NSString *safeName = ([tweakName isKindOfClass:NSString.class] && tweakName.length > 0) ? [tweakName copy] : safeID;
+    uint64_t runGeneration = repotweaks_current_generation();
 
-    repotweaks_perform_sync(^{
+    bool completed = repotweaks_perform_sync_timeout(^{
+        if (!repotweaks_generation_is_current(runGeneration)) return;
         if (!g_repo_contexts) g_repo_contexts = [NSMutableDictionary dictionary];
         if (!g_repo_timers_registry) g_repo_timers_registry = [NSMutableDictionary dictionary];
 
@@ -294,6 +430,7 @@ bool repotweaks_run_isolated_js(NSString *tweakID, NSString *tweakName, NSString
         };
 
         context[@"setInterval"] = ^JSValue*(JSValue *func, JSValue *delay) {
+            if (!repotweaks_generation_is_active(runGeneration)) return [JSValue valueWithInt32:0 inContext:[JSContext currentContext]];
             int tId = ++g_repo_timer_id_counter;
             uint64_t ms = [delay toUInt32];
             if (ms < 16) ms = 16;
@@ -302,7 +439,7 @@ bool repotweaks_run_isolated_js(NSString *tweakID, NSString *tweakName, NSString
             dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, ms * NSEC_PER_MSEC),
                                       ms * NSEC_PER_MSEC, (ms / 10) * NSEC_PER_MSEC);
             dispatch_source_set_event_handler(timer, ^{
-                if (!g_repo_shutting_down) [func callWithArguments:@[]];
+                if (repotweaks_generation_is_active(runGeneration)) [func callWithArguments:@[]];
             });
 
             tweakTimers[@(tId)] = timer;
@@ -311,6 +448,7 @@ bool repotweaks_run_isolated_js(NSString *tweakID, NSString *tweakName, NSString
         };
 
         context[@"clearInterval"] = ^(JSValue *timerId) {
+            if (!repotweaks_generation_is_active(runGeneration)) return;
             int tId = [timerId toInt32];
             dispatch_source_t timer = (dispatch_source_t)tweakTimers[@(tId)];
             if (timer) {
@@ -320,6 +458,7 @@ bool repotweaks_run_isolated_js(NSString *tweakID, NSString *tweakName, NSString
         };
 
         context[@"setTimeout"] = ^JSValue*(JSValue *func, JSValue *delay) {
+            if (!repotweaks_generation_is_active(runGeneration)) return [JSValue valueWithInt32:0 inContext:[JSContext currentContext]];
             int tId = ++g_repo_timer_id_counter;
             uint64_t ms = [delay toUInt32];
 
@@ -327,7 +466,7 @@ bool repotweaks_run_isolated_js(NSString *tweakID, NSString *tweakName, NSString
             dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, ms * NSEC_PER_MSEC),
                                       DISPATCH_TIME_FOREVER, 0);
             dispatch_source_set_event_handler(timer, ^{
-                if (!g_repo_shutting_down) [func callWithArguments:@[]];
+                if (repotweaks_generation_is_active(runGeneration)) [func callWithArguments:@[]];
                 dispatch_source_cancel(timer);
                 [tweakTimers removeObjectForKey:@(tId)];
             });
@@ -338,6 +477,7 @@ bool repotweaks_run_isolated_js(NSString *tweakID, NSString *tweakName, NSString
         };
 
         context[@"clearTimeout"] = ^(JSValue *timerId) {
+            if (!repotweaks_generation_is_active(runGeneration)) return;
             int tId = [timerId toInt32];
             dispatch_source_t timer = (dispatch_source_t)tweakTimers[@(tId)];
             if (timer) {
@@ -347,34 +487,34 @@ bool repotweaks_run_isolated_js(NSString *tweakID, NSString *tweakName, NSString
         };
 
         context[@"log"] = ^(NSString *msg) {
-            if (g_repo_shutting_down) return;
+            if (!repotweaks_generation_is_active(runGeneration)) return;
             log_user("[RepoTweaks][%s] %s\n", safeName.UTF8String, [msg UTF8String]);
         };
 
         context[@"r_pref_num"] = ^NSNumber*(NSString *key) {
-            if (g_repo_shutting_down) return @(0);
+            if (!repotweaks_generation_is_active(runGeneration)) return @(0);
             return @([repotweaks_pref_string(safeID, key) doubleValue]);
         };
 
         context[@"r_pref_str"] = ^NSString*(NSString *key) {
-            if (g_repo_shutting_down) return @"";
+            if (!repotweaks_generation_is_active(runGeneration)) return @"";
             return repotweaks_pref_string(safeID, key);
         };
 
         context[@"r_pref_bool"] = ^NSNumber*(NSString *key) {
-            if (g_repo_shutting_down) return @(0);
+            if (!repotweaks_generation_is_active(runGeneration)) return @(0);
             return @([repotweaks_pref_string(safeID, key) boolValue]);
         };
 
         context[@"r_sel"] = ^NSString*(NSString *selName) {
-            if (g_repo_shutting_down) return repo_uint64_to_js(0);
+            if (!repotweaks_generation_is_active(runGeneration)) return repo_uint64_to_js(0);
             if (![selName isKindOfClass:NSString.class]) return repo_uint64_to_js(0);
             uint64_t selPtr = r_sel([selName UTF8String]);
             return repo_uint64_to_js(selPtr);
         };
 
         context[@"r_responds"] = ^() {
-            if (g_repo_shutting_down) return @(0);
+            if (!repotweaks_generation_is_active(runGeneration)) return @(0);
             NSArray *args = [JSContext currentArguments];
             if (args.count < 2) return @(0);
 
@@ -384,13 +524,13 @@ bool repotweaks_run_isolated_js(NSString *tweakID, NSString *tweakName, NSString
         };
 
         context[@"r_class"] = ^NSString*(NSString *className) {
-            if (g_repo_shutting_down) return repo_uint64_to_js(0);
+            if (!repotweaks_generation_is_active(runGeneration)) return repo_uint64_to_js(0);
             uint64_t res = r_class([className UTF8String]);
             return repo_uint64_to_js(res);
         };
 
         context[@"r_msg2"] = ^() {
-            if (g_repo_shutting_down) return repo_uint64_to_js(0);
+            if (!repotweaks_generation_is_active(runGeneration)) return repo_uint64_to_js(0);
             NSArray *args = [JSContext currentArguments];
             if (args.count < 2) return repo_uint64_to_js(0);
 
@@ -406,7 +546,7 @@ bool repotweaks_run_isolated_js(NSString *tweakID, NSString *tweakName, NSString
         };
 
         context[@"r_msg2_main"] = ^() {
-            if (g_repo_shutting_down) return repo_uint64_to_js(0);
+            if (!repotweaks_generation_is_active(runGeneration)) return repo_uint64_to_js(0);
             NSArray *args = [JSContext currentArguments];
             if (args.count < 2) return repo_uint64_to_js(0);
 
@@ -422,7 +562,7 @@ bool repotweaks_run_isolated_js(NSString *tweakID, NSString *tweakName, NSString
         };
 
         context[@"r_nsstr"] = ^NSString*(NSString *str) {
-            if (g_repo_shutting_down || !str) return repo_uint64_to_js(0);
+            if (!repotweaks_generation_is_active(runGeneration) || !str) return repo_uint64_to_js(0);
             uint64_t ptr = r_nsstr_retained([str UTF8String]);
             return repo_uint64_to_js(ptr);
         };
@@ -430,13 +570,18 @@ bool repotweaks_run_isolated_js(NSString *tweakID, NSString *tweakName, NSString
         log_user("[RepoTweaks] Spawning sandbox for: %s\n", safeName.UTF8String);
         [context evaluateScript:jsCode];
         if (context.exception) ok = false;
-    });
+    }, 15 * NSEC_PER_SEC);
+
+    if (!completed) {
+        ok = false;
+        repotweaks_abandon_js_queue_after_timeout("run timeout", NO);
+    }
 
     return ok;
 }
 
 bool repotweaks_apply_in_session(void) {
-    __sync_lock_test_and_set(&g_repo_shutting_down, 0);
+    repotweaks_begin_apply_generation();
 
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     NSDictionary *allRepos = repotweaks_saved_caches(d);
@@ -457,7 +602,16 @@ bool repotweaks_apply_in_session(void) {
 
             NSString *toggleKey = repotweaks_enabled_defaults_key(url, tweakID);
             if (![d boolForKey:toggleKey]) {
-                repotweaks_perform_sync(^{ repotweaks_cancel_tweak_locked(storageKey); });
+                uint64_t cancelGeneration = repotweaks_current_generation();
+                bool cancelled = repotweaks_perform_sync_timeout(^{
+                    if (!repotweaks_generation_is_current(cancelGeneration)) return;
+                    repotweaks_cancel_tweak_locked(storageKey);
+                }, 2 * NSEC_PER_SEC);
+                if (!cancelled) {
+                    log_user("[RepoTweaks] Timed out clearing disabled tweak %s; resetting JS queue.\n",
+                             tweakID.UTF8String);
+                    repotweaks_abandon_js_queue_after_timeout("disabled tweak cleanup timeout", NO);
+                }
                 continue;
             }
 
@@ -628,15 +782,18 @@ void repotweaks_download_script(NSString *repoURL, NSString *tweakId, NSString *
 
         NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
         [d setObject:jsCode forKey:repotweaks_script_defaults_key(repoURL, tweakId)];
+        repotweaks_seed_default_values_for_script(d, repoURL, tweakId, jsCode);
         [d synchronize];
         finish(YES);
     }] resume];
 }
 
 bool repotweaks_stop_in_session(void) {
-    __sync_lock_test_and_set(&g_repo_shutting_down, 1);
+    repotweaks_set_shutting_down(YES);
+    uint64_t stopGeneration = repotweaks_current_generation();
 
     bool stopped = repotweaks_perform_sync_timeout(^{
+        if (!repotweaks_generation_is_current(stopGeneration)) return;
         log_user("[RepoTweaks] Safe stop: stopping timers.\n");
         if (g_repo_timers_registry) {
             for (NSString *tweakID in [g_repo_timers_registry allKeys]) {
@@ -649,7 +806,74 @@ bool repotweaks_stop_in_session(void) {
 
     if (!stopped) {
         log_user("[RepoTweaks] Safe stop timed out; a script may be stuck in a long-running loop.\n");
+        repotweaks_abandon_js_queue_after_timeout("cleanup timeout", YES);
     }
 
     return stopped;
+}
+
+#pragma mark - Update detection
+
+NSString * const RepoTweaksDidRefreshNotification = @"RepoTweaksDidRefreshNotification";
+
+NSString *repotweaks_installed_version_key(NSString *repoURL, NSString *tweakId) {
+    return [NSString stringWithFormat:@"RepoTweakInstalledVersion_%@", repotweaks_storage_key(repoURL, tweakId)];
+}
+
+static NSComparisonResult repotweaks_compare_versions(NSString *a, NSString *b) {
+    if (!a.length && !b.length) return NSOrderedSame;
+    if (!a.length) return NSOrderedAscending;
+    if (!b.length) return NSOrderedDescending;
+    return [a compare:b options:NSNumericSearch];
+}
+
+NSUInteger repotweaks_available_update_count(void) {
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    NSDictionary *caches = repotweaks_saved_caches(d);
+    NSUInteger count = 0;
+
+    for (NSString *url in repotweaks_saved_urls(d)) {
+        id repoRaw = caches[url];
+        if (![repoRaw isKindOfClass:NSDictionary.class]) continue;
+        id tweaksRaw = ((NSDictionary *)repoRaw)[@"tweaks"];
+        if (![tweaksRaw isKindOfClass:NSArray.class]) continue;
+
+        for (id tweakRaw in (NSArray *)tweaksRaw) {
+            if (![tweakRaw isKindOfClass:NSDictionary.class]) continue;
+            NSDictionary *tweak = (NSDictionary *)tweakRaw;
+            NSString *tweakID = repotweaks_string_or_empty(tweak[@"id"]);
+            if (tweakID.length == 0) continue;
+
+            NSString *installedVersion = [d stringForKey:repotweaks_installed_version_key(url, tweakID)];
+            if (!installedVersion.length) continue;
+
+            NSString *repoVersion = repotweaks_string_or_empty(tweak[@"version"]);
+            if (repoVersion.length && repotweaks_compare_versions(repoVersion, installedVersion) == NSOrderedDescending) {
+                count++;
+            }
+        }
+    }
+    return count;
+}
+
+void repotweaks_refresh_all_sources(void (^completion)(void)) {
+    repotweaks_seed_default_repos();
+    NSArray<NSString *> *urls = repotweaks_saved_urls([NSUserDefaults standardUserDefaults]);
+    if (urls.count == 0) {
+        if (completion) completion();
+        return;
+    }
+
+    dispatch_group_t group = dispatch_group_create();
+    for (NSString *url in urls) {
+        dispatch_group_enter(group);
+        repotweaks_refresh_repo(url, ^(BOOL success, NSString *message) {
+            dispatch_group_leave(group);
+        });
+    }
+
+    dispatch_group_notify(group, dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:RepoTweaksDidRefreshNotification object:nil];
+        if (completion) completion();
+    });
 }

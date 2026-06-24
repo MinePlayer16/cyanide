@@ -22,6 +22,7 @@ static BOOL PackageRequiresThemerTheme(Package *package)
 static BOOL PackageCanQueueInstall(Package *package)
 {
     if (package.kind == PackageInstallKindDirectTool) return NO;
+    if (package.installDisabledReason.length > 0) return NO;
     if (!PackageRequiresThemerTheme(package)) return YES;
     return settings_themer_has_selected_theme();
 }
@@ -139,6 +140,15 @@ static BOOL PackageCanQueueInstall(Package *package)
     return NO;
 }
 
+- (BOOL)hasQueuedRepoTweakInstallExcludingPackage:(Package *)package
+{
+    for (Package *p in self.queuedInstalls) {
+        if (package && [p.identifier isEqualToString:package.identifier]) continue;
+        if (p.kind == PackageInstallKindRepoTweak && p.repoTweakUsesQuickLoader) return YES;
+    }
+    return NO;
+}
+
 - (BOOL)canQueueIntent:(PackageQueueIntent)intent
             forPackage:(Package *)package
                 reason:(NSString * _Nullable * _Nullable)reason
@@ -158,6 +168,16 @@ static BOOL PackageCanQueueInstall(Package *package)
     if (!isHideHomeBar && [self hasQueuedHideHomeBarIntentExcludingPackage:package]) {
         if (reason) {
             *reason = @"Hide Home Bar is already waiting in the queue and must run by itself. Apply or remove Hide Home Bar first, then queue other tweaks after the respring.";
+        }
+        return NO;
+    }
+
+    if (intent == PackageQueueIntentInstall &&
+        package.kind == PackageInstallKindRepoTweak &&
+        package.repoTweakUsesQuickLoader &&
+        [self hasQueuedRepoTweakInstallExcludingPackage:package]) {
+        if (reason) {
+            *reason = @"QuickLoader installs one repo tweak at a time. Apply or remove the currently queued repo tweak first.";
         }
         return NO;
     }
@@ -243,7 +263,7 @@ static BOOL PackageCanQueueInstall(Package *package)
     BOOL needsRunActions = NO;
 
     for (Package *pkg in toInstall) {
-        if (pkg.kind == PackageInstallKindToggle) {
+        if (pkg.kind == PackageInstallKindToggle || pkg.kind == PackageInstallKindRepoTweak) {
             needsRunActions = YES;
             [pkg applyCommittedState:YES];
         } else {
@@ -251,7 +271,7 @@ static BOOL PackageCanQueueInstall(Package *package)
         }
     }
     for (Package *pkg in toUninstall) {
-        if (pkg.kind == PackageInstallKindToggle) {
+        if (pkg.kind == PackageInstallKindToggle || pkg.kind == PackageInstallKindRepoTweak) {
             needsRunActions = YES;
             [pkg applyCommittedState:NO];
         } else {

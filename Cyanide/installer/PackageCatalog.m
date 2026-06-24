@@ -6,9 +6,90 @@
 #import "PackageCatalog.h"
 #import "../SettingsViewController.h"
 #import "../PatreonAuth.h"
+#import "../tweaks/RepoTweaks.h"
 #import "../tweaks/private_compat.h"
 
 @implementation PackageCatalog
+
+static NSString *catalog_string_or_empty(id value)
+{
+    return [value isKindOfClass:NSString.class] ? (NSString *)value : @"";
+}
+
+static NSArray<NSString *> *catalog_repotweaks_urls(NSUserDefaults *d)
+{
+    id raw = [d objectForKey:@"RepoTweaksURLs"];
+    if (![raw isKindOfClass:NSArray.class]) return @[];
+    NSMutableArray<NSString *> *urls = [NSMutableArray array];
+    for (id value in (NSArray *)raw) {
+        if ([value isKindOfClass:NSString.class]) [urls addObject:value];
+    }
+    return urls;
+}
+
+static NSDictionary *catalog_repotweaks_caches(NSUserDefaults *d)
+{
+    id raw = [d objectForKey:@"RepoTweaksCaches"];
+    return [raw isKindOfClass:NSDictionary.class] ? (NSDictionary *)raw : @{};
+}
+
+static BOOL catalog_repo_script_requires_native_bridge(NSString *rawScript)
+{
+    if (![rawScript isKindOfClass:NSString.class] || rawScript.length == 0) return NO;
+    return [rawScript containsString:@"nativeCallBuff"] ||
+           [rawScript containsString:@"runOnMainEvaluate"] ||
+           [rawScript containsString:@"Native.callSymbol"];
+}
+
++ (NSArray<Package *> *)repoPackages
+{
+    repotweaks_seed_default_repos();
+
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    NSDictionary *caches = catalog_repotweaks_caches(d);
+    NSMutableArray<Package *> *packages = [NSMutableArray array];
+
+    for (NSString *url in catalog_repotweaks_urls(d)) {
+        id repoRaw = caches[url];
+        if (![repoRaw isKindOfClass:NSDictionary.class]) continue;
+        NSDictionary *repo = (NSDictionary *)repoRaw;
+        NSString *repoName = catalog_string_or_empty(repo[@"repoName"]);
+        NSString *author = catalog_string_or_empty(repo[@"author"]);
+        id tweaksRaw = repo[@"tweaks"];
+        if (![tweaksRaw isKindOfClass:NSArray.class]) continue;
+
+        for (id tweakRaw in (NSArray *)tweaksRaw) {
+            if (![tweakRaw isKindOfClass:NSDictionary.class]) continue;
+            NSDictionary *tweak = (NSDictionary *)tweakRaw;
+            NSString *tweakID = catalog_string_or_empty(tweak[@"id"]);
+            NSString *name = catalog_string_or_empty(tweak[@"name"]);
+            NSString *scriptURL = catalog_string_or_empty(tweak[@"scriptURL"]);
+            if (tweakID.length == 0 || name.length == 0 || scriptURL.length == 0) continue;
+
+            NSString *identifier = [NSString stringWithFormat:@"repo.%@", repotweaks_storage_key(url, tweakID)];
+            Package *pkg = [[Package alloc] initRepoTweakWithIdentifier:identifier
+                                                                   name:name
+                                                       shortDescription:catalog_string_or_empty(tweak[@"description"])
+                                                                version:catalog_string_or_empty(tweak[@"version"])
+                                                                 author:author
+                                                               repoName:repoName
+                                                                repoURL:url
+                                                            repoTweakID:tweakID
+                                                           repoScriptURL:scriptURL];
+            NSString *rawScript = [d stringForKey:repotweaks_script_defaults_key(url, tweakID)];
+            if (rawScript.length == 0) {
+                pkg.installDisabledReason = @"Refresh this source from the Sources tab before installing.";
+            } else if (pkg.repoTweakUsesQuickLoader && catalog_repo_script_requires_native_bridge(rawScript)) {
+                pkg.installDisabledReason = @"This repo tweak needs a dedicated Cyanide native backend before it can install.";
+            }
+            [packages addObject:pkg];
+        }
+    }
+
+    return [packages sortedArrayUsingComparator:^NSComparisonResult(Package *a, Package *b) {
+        return [a.name caseInsensitiveCompare:b.name];
+    }];
+}
 
 // Mirrors of the private SettingsSection enum values in SettingsViewController.m
 // (kept in sync — must match the underlying section indices used for the
@@ -341,20 +422,6 @@ static const NSInteger kSecRepoTweaks       = 26;
         quickLoader.settingsSection = kSecQuickLoader;
         quickLoader.unstableWarning = @"Runs user-selected JavaScript with access to Cyanide's RemoteCall helpers. Only use scripts you trust; bad scripts can crash SpringBoard.";
 
-        Package *repoTweaks = [[Package alloc] initWithIdentifier:@"com.darksword.repotweaks"
-                                   name:@"RepoTweaks Store"
-                       shortDescription:@"Download and run .js tweaks from repositories"
-                        longDescription:@"Add HTTPS JSON repositories, download JavaScript tweaks, and run selected scripts without recompiling Cyanide.\n\nOnly add repositories you trust. Cyanide rejects non-HTTPS sources and malformed package entries, but downloaded scripts still run with tweak-level privileges."
-                                version:@"1.0"
-                                 author:@"Iggy05"
-                               category:@"SpringBoard Tweaks"
-                             symbolName:@"tray.and.arrow.down.fill"
-                                   kind:PackageInstallKindToggle
-                             enabledKey:kSettingsRepoTweaksEnabled
-                                  isNew:YES];
-        repoTweaks.settingsSection = kSecRepoTweaks;
-        repoTweaks.unstableWarning = @"Downloads and runs JavaScript from user-added HTTPS sources. Use trusted repositories only; bad scripts can crash SpringBoard.";
-
 #if CYANIDE_PRIVATE_TWEAKS_AVAILABLE
         Package *fastLockXLite = [[Package alloc] initWithIdentifier:@"com.darksword.fastlockx-lite"
                                            name:@"FastLockX Lite"
@@ -535,10 +602,11 @@ static const NSInteger kSecRepoTweaks       = 26;
             liveWP,
             appSwitcherGrid,
             quickLoader,
-            repoTweaks,
         ];
     });
-    return list;
+    NSArray<Package *> *repoPackages = [self repoPackages];
+    if (repoPackages.count == 0) return list;
+    return [list arrayByAddingObjectsFromArray:repoPackages];
 }
 
 + (NSArray<NSString *> *)categoriesInOrder
@@ -554,6 +622,7 @@ static const NSInteger kSecRepoTweaks       = 26;
         @"System Updates",
         @"System",
         @"SpringBoard Tweaks",
+        @"JavaScript Tweaks",
     ];
     NSMutableArray<NSString *> *all = [NSMutableArray array];
     for (Package *p in [self allPackages]) {

@@ -1,6 +1,6 @@
 //
 //  sbcustomizer.h
-//  Native port of lightsaber's sbcustomizer dock+grid+labels patch.
+//  Native port of the sbcustomizer dock+grid+labels patch.
 //
 
 #ifndef sbcustomizer_h
