@@ -14,17 +14,32 @@ NSString * const PackageQueueDidChangeNotification = @"PackageQueueDidChangeNoti
 @property (nonatomic, strong) NSMutableArray<Package *> *uninstalls;
 @end
 
-static BOOL PackageRequiresThemerTheme(Package *package)
+static BOOL PackageIsThemer(Package *package)
 {
     return [package.identifier isEqualToString:@"com.darksword.themer"];
+}
+
+static BOOL PackageIsSnowBoardLite(Package *package)
+{
+    return [package.identifier isEqualToString:@"com.darksword.snowboardlite"];
+}
+
+static NSString *PackageMissingThemeReason(Package *package)
+{
+    if (PackageIsThemer(package) && !settings_themer_has_selected_theme()) {
+        return @"Icon Theme Engine needs a selected theme before it can be activated. Open its settings and choose a theme first.";
+    }
+    if (PackageIsSnowBoardLite(package) && !settings_snowboardlite_has_selected_theme()) {
+        return @"SnowBoard Lite needs a selected theme before it can be activated. Open SnowBoard Lite settings and choose iOS 6 Theme or import a SnowBoard/IconBundles theme first.";
+    }
+    return nil;
 }
 
 static BOOL PackageCanQueueInstall(Package *package)
 {
     if (package.kind == PackageInstallKindDirectTool) return NO;
     if (package.installDisabledReason.length > 0) return NO;
-    if (!PackageRequiresThemerTheme(package)) return YES;
-    return settings_themer_has_selected_theme();
+    return PackageMissingThemeReason(package).length == 0;
 }
 
 @implementation PackageQueue
@@ -157,6 +172,14 @@ static BOOL PackageCanQueueInstall(Package *package)
     if (!package) return NO;
     if (intent == PackageQueueIntentNone) return YES;
 
+    if (intent == PackageQueueIntentInstall) {
+        NSString *themeReason = PackageMissingThemeReason(package);
+        if (themeReason.length > 0) {
+            if (reason) *reason = themeReason;
+            return NO;
+        }
+    }
+
     BOOL isHideHomeBar = package.kind == PackageInstallKindHideHomeBar;
     if (isHideHomeBar && [self pendingCountExcludingPackage:package] > 0) {
         if (reason) {
@@ -253,7 +276,8 @@ static BOOL PackageCanQueueInstall(Package *package)
     NSArray<Package *> *toUninstall = self.queuedUninstalls;
 
     // Split packages into "stateful" (toggle: just flips an NSUserDefaults
-    // BOOL — fast, safe to call on main) and "heavy" (OTA / NanoRegistry —
+    // BOOL — fast, safe to call on main) and "heavy" (OTA / NanoRegistry /
+    // repo tweaks — repo installs force-refresh scripts without URL caches —
     // run kexploit + plist write, blocking). Apply stateful inline so
     // settings_run_actions sees the right flags; dispatch heavy to a
     // background queue so the InstallProgressViewController's log can
@@ -263,17 +287,23 @@ static BOOL PackageCanQueueInstall(Package *package)
     BOOL needsRunActions = NO;
 
     for (Package *pkg in toInstall) {
-        if (pkg.kind == PackageInstallKindToggle || pkg.kind == PackageInstallKindRepoTweak) {
+        if (pkg.kind == PackageInstallKindToggle) {
             needsRunActions = YES;
             [pkg applyCommittedState:YES];
+        } else if (pkg.kind == PackageInstallKindRepoTweak) {
+            needsRunActions = YES;
+            [heavyInstalls addObject:pkg];
         } else {
             [heavyInstalls addObject:pkg];
         }
     }
     for (Package *pkg in toUninstall) {
-        if (pkg.kind == PackageInstallKindToggle || pkg.kind == PackageInstallKindRepoTweak) {
+        if (pkg.kind == PackageInstallKindToggle) {
             needsRunActions = YES;
             [pkg applyCommittedState:NO];
+        } else if (pkg.kind == PackageInstallKindRepoTweak) {
+            needsRunActions = YES;
+            [heavyUninstalls addObject:pkg];
         } else {
             [heavyUninstalls addObject:pkg];
         }

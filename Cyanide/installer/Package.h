@@ -32,7 +32,7 @@ typedef NS_ENUM(NSInteger, PackageInstallKind) {
     // those backups when present.
     PackageInstallKindCallRecordingSound = 3,
 
-    // One-shot DirtyZero-style MaterialKit asset page zero. Installing hides
+    // One-shot MaterialKit asset page zero. Installing hides
     // the home bar after respring; restoring needs a respring.
     PackageInstallKindHideHomeBar = 4,
 

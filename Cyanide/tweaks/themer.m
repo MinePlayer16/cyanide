@@ -31,6 +31,7 @@ typedef struct {
 static const int    kThemerMaxCache    = 512;
 static const int    kThemerMaxIconBundleCache = 512;
 static const size_t kThemerMaxPngBytes = 1 << 18;   // 256 KB hard cap per icon
+static const NSUInteger kThemerBulkModelGraftCap = 128;
 static const uint32_t kThemerApplySettleUS = 0;
 static const bool kThemerDetailedIconLogs = false;
 
@@ -43,6 +44,7 @@ static ThemerEntry gThemerCache[kThemerMaxCache];
 static int         gThemerCacheCount = 0;
 static ThemerIconBundleEntry gThemerIconBundleCache[kThemerMaxIconBundleCache];
 static int         gThemerIconBundleCacheCount = 0;
+static NSDictionary<NSString *, NSData *> *__strong gThemerActiveThemeDataByBundle = nil;
 static int         gThemerLogBudget  = 48;
 static bool        gThemerModelProbeLogged = false;
 static bool        gThemerIconServicesProbeLogged = false;
@@ -817,6 +819,26 @@ static bool themer_needs_visible_push(const char *bundle)
     // Keep SnowBoard Lite on the model/cache path. The visible setter path can
     // draw an extra image layer above SpringBoard's own rounded icon mask.
     return false;
+}
+
+static bool themer_should_push_visible_theme_icon(const char *bundle)
+{
+    if (!bundle || !bundle[0]) return false;
+
+    int major = themer_host_ios_major();
+    if (major > 0 && major < 26) {
+        return themer_needs_visible_push(bundle);
+    }
+    if (major < 26) return false;
+
+    // iOS 26 can report a successful model/cache graft while the mounted
+    // SBIconView keeps drawing its old contents. For active SnowBoard Lite
+    // themes, also push the current visible view so the user sees the theme
+    // immediately; the model/cache graft still carries future layout redraws.
+    NSDictionary<NSString *, NSData *> *activeData = gThemerActiveThemeDataByBundle;
+    if (activeData.count == 0) return false;
+    NSString *key = [NSString stringWithUTF8String:bundle];
+    return key.length > 0 && activeData[key] != nil;
 }
 
 static NSDictionary<NSString *, NSData *> *themer_normalized_theme_data(NSDictionary<NSString *, NSData *> *input)
@@ -1692,6 +1714,7 @@ static int themer_iter_iconviews(uint64_t listView,
         }
 
         bool dynamicOverlay = themer_should_pin_dynamic_overlay(bundle, v);
+        bool visiblePush = themer_should_push_visible_theme_icon(bundle);
         if (!dynamicOverlay) themer_clear_visible_override(v);
 
         uint64_t image = themer_lookup_cached(bundle);
@@ -1725,8 +1748,21 @@ static int themer_iter_iconviews(uint64_t listView,
         }
         if (!dynamicOverlay) {
             themer_clear_dynamic_overlay(v);
-            if (!themer_needs_visible_push(bundle)) {
-                applied++;
+            uint64_t icon = themer_application_icon_for_iconview(v);
+            ThemerEntry *entry = themer_lookup_entry(bundle);
+            if (entry && r_is_objc_ptr(icon)) {
+                bool changed = false;
+                if (themer_graft_icon_model(icon, image, entry, v, &changed)) {
+                    (void)themer_notify_icon_image_changed(icon);
+                    if (!entry->iconServicesSeeded) {
+                        double iconWidth = themer_icon_width_for_view(v);
+                        entry->iconServicesSeeded =
+                            themer_seed_iconservices_cache(bundle, image, iconWidth) > 0;
+                    }
+                    applied++;
+                }
+            }
+            if (!visiblePush && !themer_needs_visible_push(bundle)) {
                 continue;
             }
         }
@@ -1739,7 +1775,8 @@ static int themer_iter_iconviews(uint64_t listView,
         int rung = 0;
         if (dynamicOverlay && themer_pin_dynamic_overlay(v, image, bundle)) {
             rung = 1;
-        } else if (!dynamicOverlay && themer_needs_visible_push(bundle)) {
+        } else if (!dynamicOverlay &&
+                   (visiblePush || themer_needs_visible_push(bundle))) {
             rung = themer_push_image(v, image);
         }
 
@@ -1827,6 +1864,7 @@ static int themer_repaint_cached_iconviews(uint64_t listView,
                                   r_responds_main(iiv, "displayedImage"))
             ? r_msg2_main(iiv, "displayedImage", 0, 0, 0, 0) : 0;
         bool dynamicOverlay = themer_should_pin_dynamic_overlay(bundle, v);
+        bool visiblePush = themer_should_push_visible_theme_icon(bundle);
         if (!dynamicOverlay) themer_clear_visible_override(v);
         if (!force && !dynamicOverlay &&
             overrideRead == image && displayedRead == image) {
@@ -1836,7 +1874,7 @@ static int themer_repaint_cached_iconviews(uint64_t listView,
         }
         if (!dynamicOverlay) {
             themer_clear_dynamic_overlay(v);
-            if (!themer_needs_visible_push(bundle)) {
+            if (!visiblePush && !themer_needs_visible_push(bundle)) {
                 if (skips) (*skips)++;
                 continue;
             }
@@ -1845,7 +1883,8 @@ static int themer_repaint_cached_iconviews(uint64_t listView,
         int rung = 0;
         if (dynamicOverlay && themer_pin_dynamic_overlay(v, image, bundle)) {
             rung = 1;
-        } else if (!dynamicOverlay && themer_needs_visible_push(bundle)) {
+        } else if (!dynamicOverlay &&
+                   (visiblePush || themer_needs_visible_push(bundle))) {
             rung = themer_push_image(v, image);
         }
         if (rung > 0) {
@@ -2182,6 +2221,56 @@ bool themer_repaint_dynamic_cached_views_in_session(void)
     return applied > 0;
 }
 
+bool themer_repaint_visible_theme_views_in_session(void)
+{
+    NSDictionary<NSString *, NSData *> *activeData = gThemerActiveThemeDataByBundle;
+    if (gThemerCacheCount <= 0 && activeData.count == 0) {
+        printf("[THEMER] visible theme repaint skipped; cache/theme empty\n");
+        return false;
+    }
+    if (activeData.count == 0) {
+        return themer_repaint_dynamic_cached_views_in_session();
+    }
+
+    uint64_t startUS = themer_now_us();
+    uint32_t prevSettle = r_settle_us(kThemerApplySettleUS);
+
+    uint64_t listViewCls = r_class("SBIconListView");
+    uint64_t iconViewCls = r_class("SBIconView");
+    if (!r_is_objc_ptr(listViewCls) || !r_is_objc_ptr(iconViewCls)) {
+        r_settle_us(prevSettle);
+        return false;
+    }
+
+    enum { LV_CAP = 64 };
+    uint64_t lvs[LV_CAP];
+    int nlv = sb_collect_views_in_windows(listViewCls, lvs, LV_CAP);
+    if (nlv == 0) {
+        r_settle_us(prevSettle);
+        printf("[THEMER] visible theme repaint: no visible SBIconListView\n");
+        return false;
+    }
+
+    int rungHits[4] = {0};
+    int misses = 0;
+    int applied = 0;
+    for (int i = 0; i < nlv; i++) {
+        applied += themer_iter_iconviews(lvs[i], activeData, iconViewCls,
+                                         rungHits, &misses);
+    }
+
+    uint64_t elapsed = (themer_now_us() - startUS) / 1000ULL;
+    r_settle_us(prevSettle);
+    printf("[THEMER] visible theme repaint lists=%d applied=%d misses=%d "
+           "rungs={1:%d,2:%d,3:%d,4:%d} cache=%d theme=%lu elapsed=%llums\n",
+           nlv, applied, misses,
+           rungHits[0], rungHits[1], rungHits[2], rungHits[3],
+           gThemerCacheCount,
+           (unsigned long)activeData.count,
+           (unsigned long long)elapsed);
+    return applied > 0;
+}
+
 static NSSet<NSString *> *themer_collect_visible_bundles(void)
 {
     uint64_t listViewCls = r_class("SBIconListView");
@@ -2215,6 +2304,7 @@ bool themer_apply_data_in_session(NSDictionary<NSString *, NSData *> *imageDataB
         return false;
     }
     imageDataByBundle = themer_normalized_theme_data(imageDataByBundle);
+    gThemerActiveThemeDataByBundle = [imageDataByBundle copy];
     printf("[THEMER] apply data entries=%lu cacheCarried=%d\n",
            (unsigned long)imageDataByBundle.count, gThemerCacheCount);
     if (!gThemerVisiblePolicyLogged) {
@@ -2252,8 +2342,16 @@ bool themer_apply_data_in_session(NSDictionary<NSString *, NSData *> *imageDataB
 
     int rungHits[4] = {0};
     int misses = 0;
-    int modelGrafted = themer_graft_icon_models_for_theme(imageDataByBundle,
+    int modelGrafted = 0;
+    if (imageDataByBundle.count <= kThemerBulkModelGraftCap) {
+        modelGrafted = themer_graft_icon_models_for_theme(imageDataByBundle,
                                                           &misses);
+    } else {
+        printf("[THEMER] model pass deferred for large theme entries=%lu cap=%lu; "
+               "visible icons will lazy-graft during apply/repair\n",
+               (unsigned long)imageDataByBundle.count,
+               (unsigned long)kThemerBulkModelGraftCap);
+    }
     int applied = 0;
     for (int i = 0; i < nlv; i++) {
         applied += themer_iter_iconviews(lvs[i], imageDataByBundle, iconViewCls,
@@ -2335,10 +2433,6 @@ bool themer_apply_in_session(const char *themePath)
            themePath, (unsigned long)availableCount, (unsigned long)aliasKeyCount);
     if (availableCount == 0) return false;
 
-    NSSet<NSString *> *visible = themer_collect_visible_bundles();
-    printf("[THEMER] visible bundles count=%lu list=%s\n",
-           (unsigned long)visible.count,
-           themer_join_strings_for_log(visible, 160).UTF8String);
     printf("[THEMER] explicit file bundles count=%lu list=%s\n",
            (unsigned long)explicitFileBundles.count,
            themer_join_strings_for_log(explicitFileBundles, 200).UTF8String);
@@ -2348,19 +2442,10 @@ bool themer_apply_in_session(const char *themePath)
     printf("[THEMER] alias-target bundles count=%lu list=%s\n",
            (unsigned long)aliasTargetBundles.count,
            themer_join_strings_for_log(aliasTargetBundles, 240).UTF8String);
-    NSMutableSet<NSString *> *targetBundles = [visible mutableCopy];
-    NSUInteger explicitAdded = 0;
+    NSMutableSet<NSString *> *targetBundles = [explicitFileBundles mutableCopy];
     NSUInteger priorityAdded = 0;
     NSUInteger appleAdded = 0;
     NSUInteger aliasAdded = 0;
-    for (NSString *bid in explicitFileBundles) {
-        if (![bid isKindOfClass:NSString.class] || bid.length == 0) continue;
-        if ([targetBundles containsObject:bid]) continue;
-        if (themer_theme_path_for_bundle(pathByBundle, bid)) {
-            [targetBundles addObject:bid];
-            explicitAdded++;
-        }
-    }
     for (NSString *bid in appleSystemBundles) {
         if (![bid isKindOfClass:NSString.class] || bid.length == 0) continue;
         if ([targetBundles containsObject:bid]) continue;
@@ -2406,11 +2491,10 @@ bool themer_apply_in_session(const char *themePath)
     printf("[THEMER] matched bundles count=%lu list=%s\n",
            (unsigned long)matchedBundles.count,
            themer_join_strings_for_log(matchedBundles, 240).UTF8String);
-    printf("[THEMER] apply loaded=%lu matched of %lu target (%lu visible + %lu explicit + %lu apple + %lu alias + %lu priority), %lu available caseFallbacks=%lu\n",
+    printf("[THEMER] apply loaded=%lu matched of %lu target (%lu explicit + %lu apple + %lu alias + %lu priority), %lu available caseFallbacks=%lu\n",
            (unsigned long)dict.count,
            (unsigned long)targetBundles.count,
-           (unsigned long)visible.count,
-           (unsigned long)explicitAdded,
+           (unsigned long)explicitFileBundles.count,
            (unsigned long)appleAdded,
            (unsigned long)aliasAdded,
            (unsigned long)priorityAdded,
@@ -2438,6 +2522,7 @@ bool themer_stop_in_session(void)
     }
     gThemerCacheCount = 0;
     themer_reset_icon_bundle_cache();
+    gThemerActiveThemeDataByBundle = nil;
     gThemerRung = -1;
     gThemerHasUpdateAfter = false;
     gThemerHasUpdateImageView = false;
@@ -2459,6 +2544,7 @@ void themer_forget_remote_state(void)
     }
     gThemerCacheCount = 0;
     themer_reset_icon_bundle_cache();
+    gThemerActiveThemeDataByBundle = nil;
     gThemerRung = -1;
     gThemerHasUpdateAfter = false;
     gThemerHasUpdateImageView = false;

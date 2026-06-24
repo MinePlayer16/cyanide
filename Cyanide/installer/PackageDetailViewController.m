@@ -206,7 +206,7 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
     }
     if (self.package.kind == PackageInstallKindNanoRegistry) return @"Apply/Remove";
     if (self.package.kind == PackageInstallKindCallRecordingSound) return @"Silence/Restore";
-    if (self.package.kind == PackageInstallKindHideHomeBar) return @"Hide/Restore";
+    if (self.package.kind == PackageInstallKindHideHomeBar) return self.package.isInstalled ? @"Restore" : @"Hide";
     return @"Disable/Enable";
 }
 
@@ -226,7 +226,7 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
     if (self.package.kind == PackageInstallKindHideHomeBar) {
         if (intent == PackageQueueIntentInstall) return @"Hide Pending";
         if (intent == PackageQueueIntentUninstall) return @"Restore Pending";
-        return @"Manual Control";
+        return self.package.isInstalled ? @"Hidden" : @"Ready";
     }
     if (intent == PackageQueueIntentInstall) return @"Disable Pending";
     if (intent == PackageQueueIntentUninstall) return @"Enable Pending";
@@ -273,6 +273,9 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
 {
     PackageQueueIntent intent = [[PackageQueue sharedQueue] intentForPackage:self.package];
     if (intent != PackageQueueIntentNone) return self.view.tintColor;
+    if (self.package.kind == PackageInstallKindHideHomeBar && self.package.isInstalled) {
+        return UIColor.systemGreenColor;
+    }
     return UIColor.secondaryLabelColor;
 }
 
@@ -285,9 +288,10 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
         return NO;
     }
 
+    BOOL hideHomeBarReason = [reason containsString:@"Hide Home Bar"];
     UIAlertController *alert =
-        [UIAlertController alertControllerWithTitle:@"Run Hide Home Bar Alone"
-                                            message:reason ?: @"Hide Home Bar must be the only pending queue item."
+        [UIAlertController alertControllerWithTitle:(hideHomeBarReason ? @"Run Hide Home Bar Alone" : @"Cannot Queue Install")
+                                            message:reason ?: @"This package cannot be queued yet."
                                      preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"OK"
                                               style:UIAlertActionStyleDefault
@@ -449,7 +453,8 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
 
 - (BOOL)requiresThemeSelection
 {
-    return [self.package.identifier isEqualToString:@"com.darksword.themer"];
+    return [self.package.identifier isEqualToString:@"com.darksword.themer"] ||
+           [self.package.identifier isEqualToString:@"com.darksword.snowboardlite"];
 }
 
 - (BOOL)isLiveWPPackage
@@ -459,9 +464,11 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
 
 - (BOOL)needsThemeBeforeInstall
 {
-    return [self requiresThemeSelection] &&
-           !self.package.isInstalled &&
-           !settings_themer_has_selected_theme();
+    if (![self requiresThemeSelection] || self.package.isInstalled) return NO;
+    if ([self.package.identifier isEqualToString:@"com.darksword.snowboardlite"]) {
+        return !settings_snowboardlite_has_selected_theme();
+    }
+    return !settings_themer_has_selected_theme();
 }
 
 - (BOOL)needsLiveWPVideoBeforeInstall
@@ -777,8 +784,12 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
 
 - (void)promptSelectThemeBeforeInstall
 {
+    BOOL snowBoardLite = [self.package.identifier isEqualToString:@"com.darksword.snowboardlite"];
+    NSString *message = snowBoardLite
+        ? @"SnowBoard Lite needs a selected theme before it can be activated. Choose iOS 6 Theme or import a SnowBoard/IconBundles theme first."
+        : @"Icon themes need a selected theme before they can be activated. Choose iOS 6 Theme or import a custom theme first.";
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Select a Theme"
-                                                                   message:@"Icon themes need a selected theme before they can be activated. Choose iOS 6 Theme or import a custom theme first."
+                                                                   message:message
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"Open Theme Settings"
                                              style:UIAlertActionStyleDefault

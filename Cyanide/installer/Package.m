@@ -166,11 +166,12 @@ static BOOL PackageRepoScriptRequiresNativeBridge(NSString *rawScript)
         case PackageInstallKindOTA:
         case PackageInstallKindNanoRegistry:
         case PackageInstallKindCallRecordingSound:
-        case PackageInstallKindHideHomeBar:
             // Manual-control packages: no persistent "installed" state from
             // the app's POV. The detail view shows an Apply/Remove menu and
             // each commit is a fresh one-shot run.
             return NO;
+        case PackageInstallKindHideHomeBar:
+            return settings_hide_home_bar_hidden();
         case PackageInstallKindDirectTool:
             return NO;
         case PackageInstallKindRepoTweak:
@@ -298,6 +299,18 @@ static BOOL PackageRepoScriptRequiresNativeBridge(NSString *rawScript)
                     [d synchronize];
                     log_user("[INSTALLER] Removed QuickLoader repo tweak: %s\n", self.name.UTF8String);
                 }
+                return;
+            }
+
+            NSString *downloadMessage = nil;
+            if (!repotweaks_download_script_sync(self.repoURL,
+                                                 self.repoTweakID,
+                                                 self.repoScriptURL,
+                                                 25.0,
+                                                 &downloadMessage)) {
+                log_user("[INSTALLER] Cannot install %s: %s Refresh the source and try again.\n",
+                         self.name.UTF8String,
+                         (downloadMessage ?: @"could not fetch the latest cache-busted script.").UTF8String);
                 return;
             }
 

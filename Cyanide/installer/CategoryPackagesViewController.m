@@ -22,9 +22,14 @@ static NSString * const kCatPkgCellID = @"CatPkgCell";
 
 - (BOOL)packageNeedsThemeBeforeInstall:(Package *)pkg
 {
-    return [pkg.identifier isEqualToString:@"com.darksword.themer"] &&
-           !pkg.isInstalled &&
-           !settings_themer_has_selected_theme();
+    if (pkg.isInstalled) return NO;
+    if ([pkg.identifier isEqualToString:@"com.darksword.themer"]) {
+        return !settings_themer_has_selected_theme();
+    }
+    if ([pkg.identifier isEqualToString:@"com.darksword.snowboardlite"]) {
+        return !settings_snowboardlite_has_selected_theme();
+    }
+    return NO;
 }
 
 - (BOOL)packageNeedsLiveWPVideoBeforeInstall:(Package *)pkg
@@ -38,9 +43,10 @@ static NSString * const kCatPkgCellID = @"CatPkgCell";
 {
     NSString *reason = nil;
     if ([[PackageQueue sharedQueue] canQueueIntent:intent forPackage:pkg reason:&reason]) return NO;
+    BOOL hideHomeBarReason = [reason containsString:@"Hide Home Bar"];
     UIAlertController *alert =
-        [UIAlertController alertControllerWithTitle:@"Run Hide Home Bar Alone"
-                                            message:reason ?: @"Hide Home Bar must be the only pending queue item."
+        [UIAlertController alertControllerWithTitle:(hideHomeBarReason ? @"Run Hide Home Bar Alone" : @"Cannot Queue Install")
+                                            message:reason ?: @"This package cannot be queued yet."
                                      preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
@@ -185,10 +191,12 @@ static NSString * const kCatPkgCellID = @"CatPkgCell";
     PackageQueueIntent intent = [[PackageQueue sharedQueue] intentForPackage:pkg];
     if (pkg.kind == PackageInstallKindDirectTool ||
         ((pkg.kind == PackageInstallKindOTA || pkg.kind == PackageInstallKindNanoRegistry ||
-          pkg.kind == PackageInstallKindCallRecordingSound || pkg.kind == PackageInstallKindHideHomeBar)
-         && intent == PackageQueueIntentNone)) {
+          pkg.kind == PackageInstallKindCallRecordingSound || pkg.kind == PackageInstallKindHideHomeBar))) {
         if (intent != PackageQueueIntentNone) {
             return [self pillWithText:@"PENDING" background:[self.view.tintColor colorWithAlphaComponent:0.18] textColor:self.view.tintColor];
+        }
+        if (pkg.kind == PackageInstallKindHideHomeBar && pkg.isInstalled) {
+            return [self pillWithText:@"HIDDEN" background:[UIColor colorWithRed:0.16 green:0.55 blue:0.32 alpha:0.18] textColor:UIColor.systemGreenColor];
         }
         return [self pillWithText:@"MANUAL" background:[UIColor.secondaryLabelColor colorWithAlphaComponent:0.14] textColor:UIColor.secondaryLabelColor];
     }
@@ -277,6 +285,10 @@ static NSString * const kCatPkgCellID = @"CatPkgCell";
     NSString *symbol;
     if (intent != PackageQueueIntentNone) {
         title = @"Cancel"; color = UIColor.systemGrayColor; symbol = @"xmark.circle";
+    } else if (pkg.kind == PackageInstallKindHideHomeBar) {
+        title = pkg.isInstalled ? @"Restore" : @"Hide";
+        color = pkg.isInstalled ? UIColor.systemRedColor : self.view.tintColor;
+        symbol = pkg.isInstalled ? @"arrow.clockwise" : @"line.3.horizontal";
     } else if (pkg.isInstalled) {
         title = (pkg.kind == PackageInstallKindRepoTweak) ? @"Remove" : @"Deactivate";
         color = UIColor.systemRedColor; symbol = @"power";
@@ -292,7 +304,7 @@ static NSString * const kCatPkgCellID = @"CatPkgCell";
     UIContextualAction *action = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleNormal title:title handler:^(UIContextualAction *a, UIView *v, void (^done)(BOOL)) {
         BOOL isInstall = (intent == PackageQueueIntentNone && !pkg.isInstalled);
         BOOL isUninstall = (intent == PackageQueueIntentNone && pkg.isInstalled);
-        if (isInstall && [self packageNeedsThemeBeforeInstall:pkg]) { done(YES); return; }
+        if (isInstall && [self packageNeedsThemeBeforeInstall:pkg]) { done(YES); [self navigateToSettingsSectionForPackage:pkg]; return; }
         if (isInstall && [self packageNeedsLiveWPVideoBeforeInstall:pkg]) { done(YES); [self navigateToSettingsSectionForPackage:pkg]; return; }
         if (isInstall && [self presentQueueConflictIfNeededForPackage:pkg intent:PackageQueueIntentInstall]) { done(YES); return; }
         if (isUninstall && [self presentQueueConflictIfNeededForPackage:pkg intent:PackageQueueIntentUninstall]) { done(YES); return; }

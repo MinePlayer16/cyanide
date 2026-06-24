@@ -8,6 +8,8 @@
 #import "RepoTweaks.h"
 #import "remote_objc.h"
 #import "../TaskRop/RemoteCall.h"
+#import "../utils/file.h"
+#import "../SettingsViewController.h"
 #import <stdio.h>
 #import <unistd.h>
 #import <string.h>
@@ -18,6 +20,9 @@
 
 
 extern uint64_t r_nsstr_retained(const char *str);
+
+static NSString * const kQuickLoaderHideHomeBarMaterialKitAssets =
+    @"/System/Library/PrivateFrameworks/MaterialKit.framework/Assets.car";
 
 // ==========================================
 // 1: 64-Bit Pointer Translation Helpers
@@ -485,6 +490,25 @@ bool quickloader_run_js_string(NSString *jsCode) {
         context[@"log"] = ^(NSString *msg) {
             if (!quickloader_generation_is_active(runGeneration)) return;
             log_user("[JS] %s\n", [msg UTF8String]);
+        };
+
+        context[@"dz_zero_system_file_page"] = ^NSNumber*(NSString *path, JSValue *offsetValue) {
+            if (!quickloader_generation_is_active(runGeneration)) return @(NO);
+            if (![path isKindOfClass:NSString.class] || path.length == 0) {
+                log_user("[QuickLoader] dz_zero_system_file_page missing path.\n");
+                return @(NO);
+            }
+            uint64_t offset = offsetValue ? js_to_uint64(offsetValue) : 0;
+            log_user("[QuickLoader] Stable page-zero request: %s offset=%llu\n",
+                     path.UTF8String,
+                     (unsigned long long)offset);
+            int rc = zero_system_file_page(path.UTF8String, (off_t)offset);
+            if (rc == 0 &&
+                offset == 0 &&
+                [path isEqualToString:kQuickLoaderHideHomeBarMaterialKitAssets]) {
+                settings_note_hide_home_bar_respring_pending();
+            }
+            return @(rc == 0);
         };
 
         context[@"r_pref_num"] = ^NSNumber*(NSString *key) {

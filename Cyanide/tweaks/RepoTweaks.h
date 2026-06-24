@@ -22,6 +22,11 @@ NSString *repotweaks_values_defaults_key(NSString *repoURL, NSString *tweakId);
 
 // Downloads the raw .js code for a specific repository tweak
 void repotweaks_download_script(NSString *repoURL, NSString *tweakId, NSString *scriptURL, void (^completion)(BOOL success));
+BOOL repotweaks_download_script_sync(NSString *repoURL,
+                                     NSString *tweakId,
+                                     NSString *scriptURL,
+                                     NSTimeInterval timeout,
+                                     NSString **message);
 void repotweaks_cancel_tweak(NSString *repoURL, NSString *tweakId);
 
 bool repotweaks_stop_in_session(void);

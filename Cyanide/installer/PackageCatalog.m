@@ -470,7 +470,7 @@ static const NSInteger kSecRepoTweaks       = 26;
         Package *hideHomeBar = [[Package alloc] initWithIdentifier:@"com.darksword.hide-home-bar"
                                            name:@"Hide Home Bar"
                                shortDescription:@"Hide the bottom home indicator"
-                                longDescription:@"Zeros the first page of /System/Library/PrivateFrameworks/MaterialKit.framework/Assets.car using a DirtyZero-style file-backed page zero, which hides the bottom home indicator after SpringBoard reloads assets.\n\nRun Hide Home Bar by itself, then respring so SpringBoard refreshes the asset cache. To bring the home indicator back, choose Restore Home Bar and respring again. Other live SpringBoard tweaks, such as App Switcher Grid, should be applied in a separate run after the respring.\n\nCredits: C4ndyF1sh/ZeroCalories for the Home Bar target and jailbreakdotparty/dirtyZero for the page-zeroing idea. Cyanide port by zeroxjf."
+                                longDescription:@"Zeros the first page of /System/Library/PrivateFrameworks/MaterialKit.framework/Assets.car using Cyanide's stable file-page zero path, which hides the bottom home indicator after SpringBoard reloads assets.\n\nRun Hide Home Bar by itself, then respring so SpringBoard refreshes the asset cache. To bring the home indicator back, choose Restore Home Bar and respring again. Other live SpringBoard tweaks, such as App Switcher Grid, should be applied in a separate run after the respring.\n\nCredits: C4ndyF1sh/ZeroCalories for the Home Bar target and jailbreakdotparty/dirtyZero for the original page-zeroing idea. Cyanide port by zeroxjf."
                                         version:version
                                          author:@"C4ndyF1sh / jailbreakdotparty / zeroxjf"
                                        category:@"Beta"
@@ -478,7 +478,7 @@ static const NSInteger kSecRepoTweaks       = 26;
                                            kind:PackageInstallKindHideHomeBar
                                      enabledKey:nil
                                           isNew:YES];
-        hideHomeBar.unstableWarning = @"Beta: DirtyZero-style system asset page zeroing. Run by itself, then respring after hiding. To restore the home indicator, choose Restore Home Bar and respring.";
+        hideHomeBar.unstableWarning = @"Beta: system asset page zeroing. Run by itself, then respring after hiding. To restore the home indicator, choose Restore Home Bar and respring.";
 
         Package *otaBlock = [[Package alloc] initWithIdentifier:@"com.darksword.ota-block"
                                            name:@"OTA Updates"

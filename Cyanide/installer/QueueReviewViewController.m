@@ -8,6 +8,7 @@
 #import "PackageCatalog.h"
 #import "InstallProgressViewController.h"
 #import "../LogTextView.h"
+#import "../SettingsViewController.h"
 
 typedef NS_ENUM(NSInteger, QueueReviewSection) {
     QueueReviewSectionInstall = 0,
@@ -22,6 +23,13 @@ typedef NS_ENUM(NSInteger, QueueReviewSection) {
 @property (nonatomic, strong) UIButton *clearButton;
 @property (nonatomic, strong) UILabel *emptyLabel;
 @end
+
+static BOOL QueuePackageIsHideHomeBar(Package *pkg)
+{
+    if (pkg.kind == PackageInstallKindHideHomeBar) return YES;
+    return pkg.kind == PackageInstallKindRepoTweak &&
+           [pkg.repoTweakID isEqualToString:@"lightsaber.hide-homebar"];
+}
 
 @implementation QueueReviewViewController
 
@@ -268,10 +276,10 @@ typedef NS_ENUM(NSInteger, QueueReviewSection) {
 - (BOOL)queueIncludesHideHomeBar
 {
     for (Package *pkg in [PackageQueue sharedQueue].queuedInstalls) {
-        if (pkg.kind == PackageInstallKindHideHomeBar) return YES;
+        if (QueuePackageIsHideHomeBar(pkg)) return YES;
     }
     for (Package *pkg in [PackageQueue sharedQueue].queuedUninstalls) {
-        if (pkg.kind == PackageInstallKindHideHomeBar) return YES;
+        if (QueuePackageIsHideHomeBar(pkg)) return YES;
     }
     return NO;
 }
@@ -367,7 +375,13 @@ typedef NS_ENUM(NSInteger, QueueReviewSection) {
     }
 
     Package *pkg = packages[indexPath.row];
-    cell.textLabel.text = pkg.name;
+    BOOL isQuickLoader = [pkg.enabledKey isEqualToString:kSettingsQuickLoaderEnabled];
+    if (isQuickLoader) {
+        NSString *scriptName = [[NSUserDefaults standardUserDefaults] stringForKey:@"QuickLoaderSourceScriptName"];
+        cell.textLabel.text = scriptName.length ? [NSString stringWithFormat:@"QuickLoader: %@", scriptName] : pkg.name;
+    } else {
+        cell.textLabel.text = pkg.name;
+    }
     cell.textLabel.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
 
     QueueReviewSection s = (QueueReviewSection)indexPath.section;
@@ -481,14 +495,14 @@ typedef NS_ENUM(NSInteger, QueueReviewSection) {
     NSInteger count = [PackageQueue sharedQueue].pendingCount;
     BOOL includesHideHomeBar = NO;
     for (Package *pkg in [PackageQueue sharedQueue].queuedInstalls) {
-        if (pkg.kind == PackageInstallKindHideHomeBar) {
+        if (QueuePackageIsHideHomeBar(pkg)) {
             includesHideHomeBar = YES;
             break;
         }
     }
     if (!includesHideHomeBar) {
         for (Package *pkg in [PackageQueue sharedQueue].queuedUninstalls) {
-            if (pkg.kind == PackageInstallKindHideHomeBar) {
+            if (QueuePackageIsHideHomeBar(pkg)) {
                 includesHideHomeBar = YES;
                 break;
             }

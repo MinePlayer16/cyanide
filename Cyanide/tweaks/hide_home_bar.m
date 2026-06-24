@@ -12,7 +12,7 @@ static const char *kHideHomeBarMaterialKitAssets =
 
 bool hide_home_bar_apply(void)
 {
-    log_user("[HOME BAR] Zeroing MaterialKit Assets.car page using DirtyZero-style page zeroing.\n");
+    log_user("[HOME BAR] Zeroing MaterialKit Assets.car page using stable file-page zeroing.\n");
     int rc = zero_system_file_page(kHideHomeBarMaterialKitAssets, 0);
     if (rc == 0) {
         log_user("[OK] Home bar asset page zeroed. Respring to refresh SpringBoard assets.\n");

@@ -32,6 +32,17 @@ omit it.
 
 ## Released
 
+### v1.3.1 - 2026-06-24
+
+- [x] Improved QuickLoader UI with loaded tweak display, active status indicator, clear button, and prominent activate button.
+- [x] Made the install queue show the loaded QuickLoader script name instead of a generic label.
+- [x] Restored Hide Home Bar's stable page-zero path, forced cache-busted repo script fetches before QuickLoader installs, and prompts for respring after repo-served Hide Home Bar runs.
+- [x] Fixed Location Simulator coordinate entry for Chinese labels, directions, and full-width punctuation.
+- [x] Fixed SnowBoard Lite only applying some visible icons on iOS 26.
+- [x] Improved SnowBoard Lite live repair by reusing the SpringBoard channel between ticks and backing off background repair work that could make SpringBoard feel slow.
+- [x] Blocked SnowBoard Lite activation until a theme is selected, with a shortcut to open theme settings.
+- [x] Made Hide Home Bar stay registered as hidden after respring, with Restore shown as the next package action.
+
 ### v1.2.23 - 2026-06-23
 
 - [x] Added a Home tab with What's New, JavaScript Tweaks and RemoteCall Tweaks overviews, and community links.

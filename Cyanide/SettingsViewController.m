@@ -974,7 +974,11 @@ static NSString * const kSettingsFastLockXLiteBlockMusic = @"FastLockXLiteBlockM
 static NSString * const kSettingsFastLockXLiteBlockFlashlight = @"FastLockXLiteBlockFlashlight";
 static NSString * const kSettingsFastLockXLiteBlockLowPower = @"FastLockXLiteBlockLowPower";
 static NSString * const kSettingsFastLockXLiteRetryInterval = @"FastLockXLiteRetryInterval";
+static NSString * const kSettingsHideHomeBarHidden = @"HideHomeBarHidden";
 static NSString * const kSettingsHideHomeBarMaterialKitBootTime = @"HideHomeBarMaterialKitBootTime";
+static NSString * const kSettingsHideHomeBarRespringPending = @"HideHomeBarRespringPending";
+static NSString * const kSettingsHideHomeBarRespringPendingBootTime = @"HideHomeBarRespringPendingBootTime";
+static NSString * const kSettingsHideHomeBarPendingHidden = @"HideHomeBarPendingHidden";
 
 NSString * const kSettingsGravityLiteEnabled = @"GravityLiteEnabled";
 NSString * const kSettingsGravityLiteDockEnabled = @"GravityLiteDockEnabled";
@@ -1358,7 +1362,7 @@ static void settings_each_springboard_cleanup_entry(void (^block)(const Settings
         { kSettingsAppSwitcherGridEnabled, "App Switcher Grid", NULL, settings_stop_appswitchergrid_registered, appswitchergrid_forget_remote_state, NULL, YES, YES },
         { kSettingsGravityLiteEnabled, "Gravity Lite", settings_request_gravitylite_stop, settings_stop_gravitylite_registered, gravitylite_forget_remote_state, NULL, YES, YES },
         { kSettingsThemerEnabled, "Themer", settings_request_themer_stop, settings_stop_themer_registered, themer_forget_remote_state, settings_themer_running, YES, YES },
-        { kSettingsSnowBoardLiteEnabled, "SnowBoard Lite", NULL, settings_stop_themer_registered, themer_forget_remote_state, NULL, NO, NO },
+        { kSettingsSnowBoardLiteEnabled, "SnowBoard Lite", NULL, settings_stop_themer_registered, themer_forget_remote_state, NULL, YES, YES },
         { kSettingsLiveWPEnabled, "LiveWP", settings_request_livewp_stop, settings_stop_livewp_registered, livewp_forget_remote_state, settings_livewp_running, YES, YES },
         { kSettingsStageStripEnabled, "Stage Strip", settings_request_stagestrip_stop, settings_stop_stagestrip_registered, stagestrip_forget_remote_state, NULL, YES, YES },
         { kSettingsFastLockXLiteEnabled, "FastLockX Lite", NULL, settings_stop_fastlockx_lite_registered, fastlockx_lite_forget_remote_state, NULL, NO, YES },
@@ -1462,6 +1466,9 @@ static const NSUInteger kNotificationIslandLiveMaxTicks = 43200;
 // model graft and should not be repainted during SpringBoard animations.
 static const useconds_t kThemerLiveIntervalUS = 2000000;
 static const useconds_t kThemerLiveBackgroundIntervalUS = 10000000;
+static const useconds_t kThemerSnowBoardLiteSlowIntervalUS = 8000000;
+static const useconds_t kThemerSnowBoardLiteSlowBackgroundIntervalUS = 30000000;
+static const NSUInteger kThemerSnowBoardLiteInitialVisibleTicks = 3;
 static const NSUInteger kThemerLiveMaxTicks = 86400;
 static const NSUInteger kThemerLegacyLiveMaxTicks = 1;
 static const useconds_t kThemerRepairInitialDelayUS = 900000;
@@ -1696,6 +1703,7 @@ static void settings_schedule_themer_quiet_repair_burst(const char *reason);
 static void settings_notify_remote_call_state_changed(void);
 static void settings_notify_remote_call_state_changed_preserving_applied(BOOL preserveApplied);
 static void settings_request_all_live_loops_stop(const char *reason);
+static void settings_clear_hide_home_bar_respring_pending(void);
 
 static BOOL settings_should_log_statbar_tick(NSUInteger tick) {
     // One-shot: log the very first tick so the user can see the loop took
@@ -1801,29 +1809,21 @@ static BOOL settings_icon_theme_live_repair_enabled(NSUserDefaults *d)
            settings_snowboardlite_live_repair_enabled(d);
 }
 
-static BOOL settings_snowboardlite_should_release_repair_session(NSUserDefaults *d)
+static useconds_t settings_themer_live_interval_for_tick(NSUserDefaults *d, NSUInteger completedTicks)
 {
-    if (!settings_snowboardlite_live_repair_enabled(d)) return NO;
+    if (settings_snowboardlite_live_repair_enabled(d) &&
+        completedTicks >= kThemerSnowBoardLiteInitialVisibleTicks) {
+        return settings_live_interval(kThemerSnowBoardLiteSlowIntervalUS,
+                                      kThemerSnowBoardLiteSlowBackgroundIntervalUS);
+    }
+    return settings_live_interval(kThemerLiveIntervalUS,
+                                  kThemerLiveBackgroundIntervalUS);
+}
 
-    __block BOOL otherPersistentUser = NO;
-    settings_each_springboard_cleanup_entry(^(const SettingsSpringBoardTweakCleanupEntry *entry) {
-        if (otherPersistentUser || !entry->key) return;
-        if ([entry->key isEqualToString:kSettingsSnowBoardLiteEnabled]) return;
-        if ([entry->key isEqualToString:kSettingsThemerEnabled]) {
-            otherPersistentUser = settings_themer_live_repair_enabled(d);
-            return;
-        }
-        if (entry->isRunning && entry->isRunning()) {
-            otherPersistentUser = YES;
-            return;
-        }
-        if ((entry->keepsSpringBoardSession || entry->cleanupOnTermination) &&
-            [d boolForKey:entry->key] &&
-            settings_tweak_is_applied(entry->key)) {
-            otherPersistentUser = YES;
-        }
-    });
-    return !otherPersistentUser;
+static BOOL settings_themer_live_tick_should_repair_visible(NSUserDefaults *d, NSUInteger tick)
+{
+    (void)tick;
+    return settings_snowboardlite_live_repair_enabled(d);
 }
 
 static void settings_note_themer_stage_conflict(BOOL userVisible)
@@ -2119,6 +2119,7 @@ static void settings_handle_springboard_restart(void)
         }
         printf("[SETTINGS] SpringBoard restart observed; dropped RemoteCall state (hadSession=%d)\n",
                (int)hadSession);
+        settings_clear_hide_home_bar_respring_pending();
         if (hadSession) {
             log_user("[APP] SpringBoard restarted; tweak sessions cleared. Hit Run to rebuild.\n");
         }
@@ -3237,23 +3238,91 @@ static BOOL settings_hide_home_bar_materialkit_zero_active(NSUserDefaults *d)
     return YES;
 }
 
-static void settings_note_hide_home_bar_materialkit_zero_active(NSUserDefaults *d)
+static BOOL settings_hide_home_bar_respring_pending_current_boot(NSUserDefaults *d)
 {
-    [d setDouble:settings_current_boot_epoch_seconds()
-          forKey:kSettingsHideHomeBarMaterialKitBootTime];
+    if (![d boolForKey:kSettingsHideHomeBarRespringPending]) return NO;
+
+    NSTimeInterval storedBoot = [d doubleForKey:kSettingsHideHomeBarRespringPendingBootTime];
+    if (storedBoot <= 0.0) return YES;
+
+    NSTimeInterval currentBoot = settings_current_boot_epoch_seconds();
+    if (currentBoot <= 0.0) return YES;
+    if (fabs(currentBoot - storedBoot) > 120.0) {
+        [d removeObjectForKey:kSettingsHideHomeBarRespringPending];
+        [d removeObjectForKey:kSettingsHideHomeBarRespringPendingBootTime];
+        [d removeObjectForKey:kSettingsHideHomeBarPendingHidden];
+        [d synchronize];
+        return NO;
+    }
+    return YES;
+}
+
+static void settings_set_hide_home_bar_registered_hidden(NSUserDefaults *d, BOOL hidden, BOOL needsRespring)
+{
+    NSTimeInterval boot = settings_current_boot_epoch_seconds();
+    if (hidden) {
+        [d setDouble:boot forKey:kSettingsHideHomeBarMaterialKitBootTime];
+        [d setBool:YES forKey:kSettingsHideHomeBarHidden];
+    } else {
+        [d setBool:NO forKey:kSettingsHideHomeBarHidden];
+        [d removeObjectForKey:kSettingsHideHomeBarMaterialKitBootTime];
+    }
+    if (needsRespring) {
+        [d setBool:YES forKey:kSettingsHideHomeBarRespringPending];
+        [d setDouble:boot forKey:kSettingsHideHomeBarRespringPendingBootTime];
+        [d setBool:hidden forKey:kSettingsHideHomeBarPendingHidden];
+    }
     [d synchronize];
+}
+
+static void settings_clear_hide_home_bar_respring_pending(void)
+{
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    if (![d boolForKey:kSettingsHideHomeBarRespringPending] &&
+        [d objectForKey:kSettingsHideHomeBarRespringPendingBootTime] == nil &&
+        [d objectForKey:kSettingsHideHomeBarPendingHidden] == nil) {
+        return;
+    }
+    [d removeObjectForKey:kSettingsHideHomeBarRespringPending];
+    [d removeObjectForKey:kSettingsHideHomeBarRespringPendingBootTime];
+    [d removeObjectForKey:kSettingsHideHomeBarPendingHidden];
+    [d synchronize];
+}
+
+BOOL settings_hide_home_bar_hidden(void)
+{
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    if (![d boolForKey:kSettingsHideHomeBarHidden]) return NO;
+    if (!settings_hide_home_bar_materialkit_zero_active(d)) {
+        // DirtyZero-style page-cache state survives respring, not reboot. If
+        // the boot marker no longer matches, drop the installed registration.
+        [d setBool:NO forKey:kSettingsHideHomeBarHidden];
+        [d synchronize];
+        return NO;
+    }
+    return YES;
+}
+
+void settings_note_hide_home_bar_respring_pending(void)
+{
+    settings_set_hide_home_bar_registered_hidden(NSUserDefaults.standardUserDefaults,
+                                                 YES,
+                                                 YES);
 }
 
 BOOL settings_hide_home_bar_respring_pending(void)
 {
-    return settings_hide_home_bar_materialkit_zero_active(NSUserDefaults.standardUserDefaults);
+    return settings_hide_home_bar_respring_pending_current_boot(NSUserDefaults.standardUserDefaults);
 }
 
 void settings_present_hide_home_bar_respring_prompt(UIViewController *host)
 {
+    BOOL targetHidden = [NSUserDefaults.standardUserDefaults boolForKey:kSettingsHideHomeBarPendingHidden];
     UIAlertController *ac = [UIAlertController
-        alertControllerWithTitle:@"Respring to Hide Home Bar?"
-                         message:@"Hide Home Bar was applied, but SpringBoard needs to restart before the home indicator disappears."
+        alertControllerWithTitle:(targetHidden ? @"Respring to Hide Home Bar?" : @"Respring to Restore Home Bar?")
+                         message:(targetHidden
+                                  ? @"Hide Home Bar was applied, but SpringBoard needs to restart before the home indicator disappears."
+                                  : @"Home Bar restore was queued, but SpringBoard needs to restart before the stock home indicator returns.")
                   preferredStyle:UIAlertControllerStyleAlert];
     [ac addAction:[UIAlertAction actionWithTitle:@"Later"
                                            style:UIAlertActionStyleCancel
@@ -3928,16 +3997,20 @@ BOOL settings_apply_hide_home_bar_hidden(BOOL hidden)
     }
 
     @try {
-        if (!hidden) {
-            return hide_home_bar_restore() ? YES : NO;
-        }
         NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+        if (!hidden) {
+            BOOL ok = hide_home_bar_restore() ? YES : NO;
+            if (ok) {
+                settings_set_hide_home_bar_registered_hidden(d, NO, YES);
+            }
+            return ok;
+        }
         if (!settings_ensure_kexploit()) {
             log_user("[HOME BAR] Failed: kernel primitives were not acquired. Please try running chain again.\n");
             return NO;
         }
         BOOL ok = hide_home_bar_apply() ? YES : NO;
-        if (ok) settings_note_hide_home_bar_materialkit_zero_active(d);
+        if (ok) settings_set_hide_home_bar_registered_hidden(d, YES, YES);
         return ok;
     } @finally {
         settings_release_actions_lock();
@@ -5150,7 +5223,7 @@ static void settings_start_themer_live_loop(void)
 
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     if (!settings_icon_theme_live_repair_enabled(d)) return;
-    if (!g_springboard_rc_ready && !settings_snowboardlite_should_release_repair_session(d)) return;
+    if (!g_springboard_rc_ready) return;
     if (settings_themer_dynamic_updates_blocked_by_stage(d)) {
         settings_note_themer_stage_conflict(YES);
         return;
@@ -5178,9 +5251,11 @@ static void settings_start_themer_live_loop(void)
             ? kThemerLegacyLiveMaxTicks
             : kThemerLiveMaxTicks;
 
-        printf("[SETTINGS] Themer dynamic live loop started interval=%uus background=%uus max=%lu iosMajor=%ld\n",
+        printf("[SETTINGS] Themer dynamic live loop started interval=%uus background=%uus sblSlow=%uus/%uus max=%lu iosMajor=%ld\n",
                kThemerLiveIntervalUS,
                kThemerLiveBackgroundIntervalUS,
+               kThemerSnowBoardLiteSlowIntervalUS,
+               kThemerSnowBoardLiteSlowBackgroundIntervalUS,
                (unsigned long)maxTicks,
                (long)iosMajor);
 
@@ -5188,42 +5263,32 @@ static void settings_start_themer_live_loop(void)
             // Start with a sleep so we don't pile a tick on top of the
             // initial Run apply that just completed.
             settings_live_loop_sleep_interruptible(0,
-                                                   settings_live_interval(kThemerLiveIntervalUS,
-                                                                          kThemerLiveBackgroundIntervalUS),
+                                                   settings_themer_live_interval_for_tick(d, tick),
                                                    &g_themer_live_stop_requested);
             while (settings_icon_theme_live_repair_enabled(d) &&
                    !settings_themer_dynamic_updates_blocked_by_stage(d) &&
                    !settings_cleanup_in_progress() &&
                    !g_themer_live_stop_requested &&
                    tick < maxTicks) {
-                useconds_t intervalUS = settings_live_interval(kThemerLiveIntervalUS,
-                                                               kThemerLiveBackgroundIntervalUS);
                 bool ok = false;
+                BOOL repairVisibleIcons = settings_themer_live_tick_should_repair_visible(d, tick);
 
                 @synchronized (settings_rc_lock()) {
                     if (g_themer_live_stop_requested) break;
-                    if (!g_springboard_rc_ready) {
-                        if (settings_snowboardlite_should_release_repair_session(d) &&
-                            g_kexploit_done &&
-                            settings_ensure_springboard_remote_call_locked()) {
-                            printf("[SETTINGS] SnowBoard Lite repair tick opened temporary SpringBoard channel\n");
-                        } else {
-                            printf("[SETTINGS] Themer dynamic loop has no SpringBoard RemoteCall session\n");
-                            failures++;
-                            break;
-                        }
-                    }
                     if (!g_kexploit_done || g_settings_actions_running) {
                         // Wait for actions to finish before next tick.
                         ok = true;
                     } else {
-                        ok = themer_repaint_dynamic_cached_views_in_session();
-                    }
-                    if (settings_snowboardlite_should_release_repair_session(d) &&
-                        g_springboard_rc_ready) {
-                        settings_destroy_springboard_remote_call_locked_internal_ex("SnowBoard Lite repair tick",
-                                                                                   YES,
-                                                                                   YES);
+                        if (!g_springboard_rc_ready) {
+                            printf("[SETTINGS] Themer dynamic loop has no SpringBoard RemoteCall session\n");
+                            failures++;
+                            break;
+                        }
+                        if (repairVisibleIcons) {
+                            ok = themer_repaint_visible_theme_views_in_session();
+                        } else {
+                            ok = themer_repaint_dynamic_cached_views_in_session();
+                        }
                     }
                 }
 
@@ -5238,8 +5303,7 @@ static void settings_start_themer_live_loop(void)
                     g_themer_live_stop_requested ||
                     tick >= maxTicks) break;
 
-                intervalUS = settings_live_interval(kThemerLiveIntervalUS,
-                                                    kThemerLiveBackgroundIntervalUS);
+                useconds_t intervalUS = settings_themer_live_interval_for_tick(d, tick);
                 settings_live_loop_sleep_interruptible(0, intervalUS,
                                                        &g_themer_live_stop_requested);
             }
@@ -5265,7 +5329,7 @@ static void settings_schedule_themer_repair_burst_internal(const char *reason, B
 
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     if (!settings_icon_theme_live_repair_enabled(d)) return;
-    if (!g_springboard_rc_ready && !settings_snowboardlite_should_release_repair_session(d)) return;
+    if (!g_springboard_rc_ready) return;
     if (settings_themer_dynamic_updates_blocked_by_stage(d)) {
         settings_note_themer_stage_conflict(force);
         return;
@@ -5297,22 +5361,11 @@ static void settings_schedule_themer_repair_burst_internal(const char *reason, B
 
                 bool ok = false;
                 @synchronized (settings_rc_lock()) {
-                    if (!g_springboard_rc_ready &&
-                        settings_snowboardlite_should_release_repair_session(d) &&
-                        g_kexploit_done) {
-                        (void)settings_ensure_springboard_remote_call_locked();
-                    }
                     if (!g_springboard_rc_ready || !g_kexploit_done ||
                         g_settings_actions_running) {
                         ok = true;
                     } else {
-                        ok = themer_repaint_dynamic_cached_views_in_session();
-                    }
-                    if (settings_snowboardlite_should_release_repair_session(d) &&
-                        g_springboard_rc_ready) {
-                        settings_destroy_springboard_remote_call_locked_internal_ex("SnowBoard Lite repair burst",
-                                                                                   YES,
-                                                                                   YES);
+                        ok = themer_repaint_visible_theme_views_in_session();
                     }
                 }
 
@@ -5401,7 +5454,7 @@ void settings_application_did_enter_background(void)
     BOOL themerLiveNeeded =
         !settings_themer_dynamic_updates_blocked_by_stage(d) &&
         ((settings_themer_live_repair_enabled(d) && g_springboard_rc_ready) ||
-         settings_snowboardlite_live_repair_enabled(d));
+         (settings_snowboardlite_live_repair_enabled(d) && g_springboard_rc_ready));
     BOOL anyLiveLoopNeeded =
         ([d boolForKey:kSettingsAxonLiteEnabled]    && g_springboard_rc_ready) ||
         (settings_rssi_install_allowed() && [d boolForKey:kSettingsRSSIDisplayEnabled] && g_springboard_rc_ready) ||
@@ -5643,6 +5696,43 @@ static NSString *settings_location_sim_host_process(NSUserDefaults *d)
     return host.length > 0 ? host : @"Maps";
 }
 
+static NSString *settings_location_sim_normalized_coordinate_text(NSString *text)
+{
+    if (![text isKindOfClass:NSString.class] || text.length == 0) return @"";
+
+    NSMutableString *normalized = [text mutableCopy];
+    CFStringTransform((__bridge CFMutableStringRef)normalized,
+                      NULL,
+                      kCFStringTransformFullwidthHalfwidth,
+                      false);
+    NSDictionary<NSString *, NSString *> *replacements = @{
+        @"−": @"-",
+        @"－": @"-",
+        @"﹣": @"-",
+        @"–": @"-",
+        @"—": @"-",
+        @"。": @".",
+        @"．": @".",
+        @"，": @",",
+        @"、": @",",
+        @"；": @";",
+        @"：": @":",
+        @"（": @"(",
+        @"）": @")",
+        @"緯": @"纬",
+        @"經": @"经",
+        @"東": @"东",
+    };
+    [replacements enumerateKeysAndObjectsUsingBlock:^(NSString *from, NSString *to, BOOL *stop) {
+        (void)stop;
+        [normalized replaceOccurrencesOfString:from
+                                    withString:to
+                                       options:0
+                                         range:NSMakeRange(0, normalized.length)];
+    }];
+    return normalized;
+}
+
 static NSArray<NSDictionary *> *settings_location_sim_number_tokens_from_text(NSString *text)
 {
     NSMutableArray<NSDictionary *> *tokens = [NSMutableArray array];
@@ -5667,14 +5757,20 @@ static NSArray<NSDictionary *> *settings_location_sim_number_tokens_from_text(NS
 static NSInteger settings_location_sim_axis_sign_for_word(NSString *word, BOOL latitude)
 {
     NSString *upper = [(word ?: @"") uppercaseString];
-    if (upper.length != 1) return 0;
-    unichar c = [upper characterAtIndex:0];
     if (latitude) {
-        if (c == 'N') return 1;
-        if (c == 'S') return -1;
+        if ([upper isEqualToString:@"N"] ||
+            [upper isEqualToString:@"NORTH"] ||
+            [upper containsString:@"北"]) return 1;
+        if ([upper isEqualToString:@"S"] ||
+            [upper isEqualToString:@"SOUTH"] ||
+            [upper containsString:@"南"]) return -1;
     } else {
-        if (c == 'E') return 1;
-        if (c == 'W') return -1;
+        if ([upper isEqualToString:@"E"] ||
+            [upper isEqualToString:@"EAST"] ||
+            [upper containsString:@"东"]) return 1;
+        if ([upper isEqualToString:@"W"] ||
+            [upper isEqualToString:@"WEST"] ||
+            [upper containsString:@"西"]) return -1;
     }
     return 0;
 }
@@ -5683,13 +5779,15 @@ static NSInteger settings_location_sim_axis_kind_for_word(NSString *word)
 {
     NSString *upper = [(word ?: @"") uppercaseString];
     if ([upper isEqualToString:@"LAT"] ||
-        [upper isEqualToString:@"LATITUDE"]) {
+        [upper isEqualToString:@"LATITUDE"] ||
+        [upper containsString:@"纬"]) {
         return 1;
     }
     if ([upper isEqualToString:@"LON"] ||
         [upper isEqualToString:@"LNG"] ||
         [upper isEqualToString:@"LONG"] ||
-        [upper isEqualToString:@"LONGITUDE"]) {
+        [upper isEqualToString:@"LONGITUDE"] ||
+        [upper containsString:@"经"]) {
         return 2;
     }
     return 0;
@@ -5795,14 +5893,15 @@ static BOOL settings_location_sim_parse_coordinate_component(NSString *text,
                                                              double *outValue)
 {
     if (!outValue) return NO;
-    NSArray<NSDictionary *> *tokens = settings_location_sim_number_tokens_from_text(text);
+    NSString *normalizedText = settings_location_sim_normalized_coordinate_text(text);
+    NSArray<NSDictionary *> *tokens = settings_location_sim_number_tokens_from_text(normalizedText);
     if (tokens.count != 1) return NO;
 
     NSDictionary *token = tokens.firstObject;
     double value = [token[@"value"] doubleValue];
     NSRange range = [token[@"range"] rangeValue];
-    NSInteger sign = settings_location_sim_axis_sign_near_range(text, range, latitude);
-    if (sign == 0) sign = settings_location_sim_axis_sign_from_text(text, latitude);
+    NSInteger sign = settings_location_sim_axis_sign_near_range(normalizedText, range, latitude);
+    if (sign == 0) sign = settings_location_sim_axis_sign_from_text(normalizedText, latitude);
     value = settings_location_sim_apply_axis_sign(value, sign);
     if (!settings_location_sim_component_valid(value, latitude)) return NO;
 
@@ -5815,7 +5914,8 @@ static BOOL settings_location_sim_parse_coordinate_pair(NSString *text,
                                                         double *longitudeOut)
 {
     if (!latitudeOut || !longitudeOut) return NO;
-    NSArray<NSDictionary *> *tokens = settings_location_sim_number_tokens_from_text(text);
+    NSString *normalizedText = settings_location_sim_normalized_coordinate_text(text);
+    NSArray<NSDictionary *> *tokens = settings_location_sim_number_tokens_from_text(normalizedText);
     if (tokens.count != 2) return NO;
 
     NSDictionary *firstToken = tokens[0];
@@ -5824,12 +5924,12 @@ static BOOL settings_location_sim_parse_coordinate_pair(NSString *text,
     double second = [secondToken[@"value"] doubleValue];
     NSRange firstRange = [firstToken[@"range"] rangeValue];
     NSRange secondRange = [secondToken[@"range"] rangeValue];
-    NSInteger firstLatSign = settings_location_sim_axis_sign_near_range(text, firstRange, YES);
-    NSInteger firstLonSign = settings_location_sim_axis_sign_near_range(text, firstRange, NO);
-    NSInteger secondLatSign = settings_location_sim_axis_sign_near_range(text, secondRange, YES);
-    NSInteger secondLonSign = settings_location_sim_axis_sign_near_range(text, secondRange, NO);
-    NSInteger firstKind = settings_location_sim_axis_kind_near_range(text, firstRange);
-    NSInteger secondKind = settings_location_sim_axis_kind_near_range(text, secondRange);
+    NSInteger firstLatSign = settings_location_sim_axis_sign_near_range(normalizedText, firstRange, YES);
+    NSInteger firstLonSign = settings_location_sim_axis_sign_near_range(normalizedText, firstRange, NO);
+    NSInteger secondLatSign = settings_location_sim_axis_sign_near_range(normalizedText, secondRange, YES);
+    NSInteger secondLonSign = settings_location_sim_axis_sign_near_range(normalizedText, secondRange, NO);
+    NSInteger firstKind = settings_location_sim_axis_kind_near_range(normalizedText, firstRange);
+    NSInteger secondKind = settings_location_sim_axis_kind_near_range(normalizedText, secondRange);
 
     if (firstKind == 1 && secondKind == 2) {
         double latitude = settings_location_sim_apply_axis_sign(first, firstLatSign);
@@ -5867,8 +5967,8 @@ static BOOL settings_location_sim_parse_coordinate_pair(NSString *text,
         return YES;
     }
 
-    NSInteger latitudeSign = settings_location_sim_axis_sign_from_text(text, YES);
-    NSInteger longitudeSign = settings_location_sim_axis_sign_from_text(text, NO);
+    NSInteger latitudeSign = settings_location_sim_axis_sign_from_text(normalizedText, YES);
+    NSInteger longitudeSign = settings_location_sim_axis_sign_from_text(normalizedText, NO);
 
     double latitude = first;
     double longitude = second;
@@ -7158,7 +7258,7 @@ static void settings_run_actions_internal(BOOL pendingOnly)
                                  ok ? "theme applied" : "did not apply cleanly");
                         cyanide_upload_log_milestone(ok ? @"snowboard-lite-applied" : @"snowboard-lite-warning");
                         if (ok && !settings_themer_live_repair_enabled(d)) {
-                            log_user("[SBL] Live repair is enabled; Cyanide will release the SpringBoard channel between repair ticks for stability.\n");
+                            log_user("[SBL] Live repair is enabled; Cyanide will keep the SpringBoard channel open so repair ticks reuse it.\n");
                             settings_start_themer_live_loop();
                         }
                     }
@@ -7433,23 +7533,6 @@ static void settings_run_actions_internal(BOOL pendingOnly)
             }
             if (runStatBar || runNSBar || runNiceBarLite || runRSSI || runAxonLite || runTypeBanner || runNotificationIsland || runLiveWP || startStageStripControlLoopAfterInstall)
                 cyanide_upload_log_milestone(@"live-tweaks-started");
-
-            if (settings_snowboardlite_should_release_repair_session(d)) {
-                BOOL closedSnowBoardRepairRemoteCall = NO;
-                @synchronized (settings_rc_lock()) {
-                    if (settings_snowboardlite_should_release_repair_session(d) &&
-                        g_springboard_rc_ready) {
-                        settings_destroy_springboard_remote_call_locked_internal_ex("SnowBoard Lite post-apply repair handoff",
-                                                                                   YES,
-                                                                                   YES);
-                        closedSnowBoardRepairRemoteCall = YES;
-                    }
-                }
-                if (closedSnowBoardRepairRemoteCall) {
-                    log_user("[SBL] SpringBoard channel released; live repair will reopen it only for repair ticks.\n");
-                    cyanide_upload_log_milestone(@"snowboard-lite-repair-channel-released");
-                }
-            }
 
             if (!settings_has_persistent_springboard_remote_call_user()) {
                 BOOL closedNonLiveRemoteCall = NO;
@@ -7939,20 +8022,21 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
     }
 
     NSMutableArray *rows = [NSMutableArray array];
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    NSString *filename = self.qlScriptName ?: [ud stringForKey:@"QuickLoaderSourceScriptName"];
+    BOOL enabled = [ud boolForKey:kSettingsQuickLoaderEnabled];
+    BOOL hasRepoTweak = [ud stringForKey:@"QuickLoaderSourceRepoURL"].length > 0;
 
-    // The main button
-    [rows addObject:@{ @"kind": @"button", @"action": @"quickloader-run-js", @"title": @"Select .js Tweak" }];
-    [rows addObject:@{ @"kind": @"button", @"action": @"quickloader-open-sources", @"title": @"📦 Open Sources Tab" }];
-
-    //filename on screen
-    NSString *filename = self.qlScriptName ?: [[NSUserDefaults standardUserDefaults] stringForKey:@"QuickLoaderSourceScriptName"];
     if (filename) {
-        [rows addObject:@{ @"kind": @"button", @"action": @"none", @"title": [NSString stringWithFormat:@"Tweak Loaded: %@", filename] }];
+        NSString *source = hasRepoTweak ? @"From source repo" : @"Local file";
+        [rows addObject:@{ @"kind": @"ql-loaded",
+                           @"title": filename,
+                           @"subtitle": source,
+                           @"enabled": @(enabled) }];
     } else {
-        [rows addObject:@{ @"kind": @"button", @"action": @"none", @"title": @"No file loaded" }];
+        [rows addObject:@{ @"kind": @"ql-empty" }];
     }
 
-    //dynamically adds rows if it detects parameters
     if (self.qlParams.count > 0) {
         for (NSDictionary *param in self.qlParams) {
             NSMutableDictionary *rowDict = [NSMutableDictionary dictionaryWithDictionary:@{
@@ -7960,22 +8044,28 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
                 @"paramType": param[@"type"],
                 @"varName": param[@"varName"],
                 @"title": param[@"label"],
-                @"default": param[@"default"] //retrieve default for ui
+                @"default": param[@"default"]
             }];
-
-            //retrieve min-max limits for ui
             if (param[@"min"]) rowDict[@"min"] = param[@"min"];
             if (param[@"max"]) rowDict[@"max"] = param[@"max"];
-
             [rows addObject:rowDict];
         }
+    }
 
-        //button to apply
-        [rows addObject:@{
-            @"kind": @"button",
-            @"action": @"quickloader-apply-dynamic",
-            @"title": @"Apply Tweak"
-        }];
+    if (filename && !enabled) {
+        [rows addObject:@{ @"kind": @"button", @"action": @"quickloader-apply-dynamic",
+                           @"title": @"Activate Tweak", @"style": @"prominent" }];
+    } else if (filename && enabled) {
+        [rows addObject:@{ @"kind": @"button", @"action": @"quickloader-apply-dynamic",
+                           @"title": @"Queued — Run Apply Tweaks" }];
+    }
+
+    [rows addObject:@{ @"kind": @"button", @"action": @"quickloader-run-js", @"title": @"Select .js File" }];
+    [rows addObject:@{ @"kind": @"button", @"action": @"quickloader-open-sources", @"title": @"Browse Sources" }];
+
+    if (filename) {
+        [rows addObject:@{ @"kind": @"button", @"action": @"quickloader-clear",
+                           @"title": @"Clear Loaded Tweak", @"destructive": @YES }];
     }
 
     return rows;
@@ -9184,7 +9274,7 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
                @"Custom themes can be a folder of PNG files named by bundle ID, such as com.apple.mobilesafari.png, or a binary plist mapping bundle IDs to PNG data. Import copies the theme into Cyanide's Documents/Themes folder. Theme Format Guide includes examples and plist exports.";
     }
     if (s == SectionSnowBoardLite) {
-        return @"SnowBoard/IconBundles importer ported from d1y/cyanide-ios. Folder imports are copied into Cyanide's Documents/SnowBoardLite library and applied through the existing icon replacement pipeline.\n\nThe import copies theme assets into Cyanide's local storage so the original theme in Files is not changed.\n\nCompatibility: SnowBoard Lite keeps live icon repair active, but releases the SpringBoard channel between repair ticks for stability. Re-run it after a respring if icons reset. Dynamic Stage Lite can stay enabled because SnowBoard Lite no longer keeps a persistent live repair session open.";
+        return @"SnowBoard/IconBundles importer ported from d1y/cyanide-ios. Folder imports are copied into Cyanide's Documents/SnowBoardLite library and applied through the existing icon replacement pipeline.\n\nThe import copies theme assets into Cyanide's local storage so the original theme in Files is not changed.\n\nCompatibility: SnowBoard Lite keeps live icon repair active and reuses the SpringBoard RemoteCall channel between repair ticks. Re-run it after a respring if icons reset.";
     }
     if (s == SectionLiveWP) {
         return @"Video wallpaper ported from d1y/cyanide-ios. Select an MP4, MOV, or M4V; Cyanide copies it into Documents/LiveWP and plays it in SpringBoard while the RemoteCall session stays alive.";
@@ -9980,11 +10070,12 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
             }
             self.qlParams = params;
 
-            // Save source and name
             NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
             [d setObject:self.qlScriptName forKey:@"QuickLoaderSourceScriptName"];
             [d setObject:self.qlRawScript forKey:@"QuickLoaderSourceRawJS"];
             [d setObject:self.qlValues forKey:@"QuickLoaderSourceValues"];
+            [d removeObjectForKey:@"QuickLoaderSourceRepoURL"];
+            [d removeObjectForKey:@"QuickLoaderSourceTweakID"];
             [d synchronize];
 
             // first auto injection and ui refresh
@@ -11524,9 +11615,19 @@ void cyanide_present_contact(UIViewController *host)
         cell.accessoryView = nil;
         cell.textLabel.text = row[@"title"];
         cell.textLabel.textAlignment = NSTextAlignmentCenter;
-        cell.textLabel.textColor = rowSupported
-            ? ([row[@"destructive"] boolValue] ? UIColor.systemRedColor : self.view.tintColor)
-            : UIColor.tertiaryLabelColor;
+
+        BOOL prominent = [row[@"style"] isEqualToString:@"prominent"];
+        if (prominent && rowSupported) {
+            cell.textLabel.textColor = UIColor.whiteColor;
+            cell.textLabel.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
+            cell.backgroundColor = self.view.tintColor;
+        } else {
+            cell.textLabel.textColor = rowSupported
+                ? ([row[@"destructive"] boolValue] ? UIColor.systemRedColor : self.view.tintColor)
+                : UIColor.tertiaryLabelColor;
+            cell.textLabel.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightRegular];
+            cell.backgroundColor = nil;
+        }
         return cell;
     }
 
@@ -11670,6 +11771,56 @@ void cyanide_present_contact(UIViewController *host)
             [seg.topAnchor      constraintEqualToAnchor:cell.contentView.layoutMarginsGuide.topAnchor],
             [seg.bottomAnchor   constraintEqualToAnchor:cell.contentView.layoutMarginsGuide.bottomAnchor],
         ]];
+        return cell;
+    }
+
+    if ([kind isEqualToString:@"ql-loaded"]) {
+        UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        UIListContentConfiguration *config = [UIListContentConfiguration subtitleCellConfiguration];
+        config.image = [UIImage systemImageNamed:@"doc.text.fill"];
+        config.imageProperties.preferredSymbolConfiguration =
+            [UIImageSymbolConfiguration configurationWithPointSize:20.0 weight:UIImageSymbolWeightSemibold];
+        BOOL active = [row[@"enabled"] boolValue];
+        config.imageProperties.tintColor = active ? UIColor.systemGreenColor : UIColor.systemOrangeColor;
+        config.imageProperties.reservedLayoutSize = CGSizeMake(34.0, 28.0);
+        config.imageProperties.maximumSize = CGSizeMake(28.0, 28.0);
+        config.imageToTextPadding = 14.0;
+        config.text = row[@"title"];
+        config.textProperties.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
+        config.secondaryText = active
+            ? [NSString stringWithFormat:@"%@ · Active", row[@"subtitle"]]
+            : row[@"subtitle"];
+        config.secondaryTextProperties.color = active ? UIColor.systemGreenColor : UIColor.secondaryLabelColor;
+        config.textToSecondaryTextVerticalPadding = 2.0;
+        NSDirectionalEdgeInsets m = config.directionalLayoutMargins;
+        m.top = 12.0; m.bottom = 12.0;
+        config.directionalLayoutMargins = m;
+        cell.contentConfiguration = config;
+        return cell;
+    }
+
+    if ([kind isEqualToString:@"ql-empty"]) {
+        UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:nil];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        UIListContentConfiguration *config = [UIListContentConfiguration subtitleCellConfiguration];
+        config.image = [UIImage systemImageNamed:@"doc.text"];
+        config.imageProperties.preferredSymbolConfiguration =
+            [UIImageSymbolConfiguration configurationWithPointSize:20.0 weight:UIImageSymbolWeightSemibold];
+        config.imageProperties.tintColor = UIColor.tertiaryLabelColor;
+        config.imageProperties.reservedLayoutSize = CGSizeMake(34.0, 28.0);
+        config.imageProperties.maximumSize = CGSizeMake(28.0, 28.0);
+        config.imageToTextPadding = 14.0;
+        config.text = @"No tweak loaded";
+        config.textProperties.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightMedium];
+        config.textProperties.color = UIColor.tertiaryLabelColor;
+        config.secondaryText = @"Select a .js file or install from Sources";
+        config.secondaryTextProperties.color = UIColor.tertiaryLabelColor;
+        config.textToSecondaryTextVerticalPadding = 2.0;
+        NSDirectionalEdgeInsets m = config.directionalLayoutMargins;
+        m.top = 12.0; m.bottom = 12.0;
+        config.directionalLayoutMargins = m;
+        cell.contentConfiguration = config;
         return cell;
     }
 
@@ -12723,7 +12874,7 @@ void cyanide_present_contact(UIViewController *host)
 - (void)presentLocationSimInvalidCoordinateAlert
 {
     UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Invalid Coordinates"
-                                                                message:@"Use decimal degrees. Latitude must be between -90 and 90. Longitude must be between -180 and 180."
+                                                                message:@"Use decimal degrees. Latitude must be between -90 and 90. Longitude must be between -180 and 180. Chinese labels like 北纬/南纬/东经/西经 and full-width punctuation are supported."
                                                          preferredStyle:UIAlertControllerStyleAlert];
     [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
     settings_present_controller(ac, self);
@@ -12733,7 +12884,7 @@ void cyanide_present_contact(UIViewController *host)
 {
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
     UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Exact Coordinates"
-                                                                message:@"Enter decimal degrees, or paste a pair like 40.7128, -74.0060."
+                                                                message:@"Enter decimal degrees, or paste a pair like 40.7128, -74.0060 or 北纬39.9042，东经116.4074."
                                                          preferredStyle:UIAlertControllerStyleAlert];
     [ac addTextFieldWithConfigurationHandler:^(UITextField *field) {
         field.placeholder = @"Latitude or lat, lon";
@@ -13670,6 +13821,32 @@ void cyanide_present_contact(UIViewController *host)
             return;
         } else if ([action isEqualToString:@"quickloader-open-sources"]) {
             [self selectBottomTabNamed:@"Sources"];
+            return;
+        } else if ([action isEqualToString:@"quickloader-clear"]) {
+            NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+            [d removeObjectForKey:@"QuickLoaderSourceScriptName"];
+            [d removeObjectForKey:@"QuickLoaderSourceRawJS"];
+            [d removeObjectForKey:@"QuickLoaderSourceValues"];
+            [d removeObjectForKey:@"QuickLoaderSourceRepoURL"];
+            [d removeObjectForKey:@"QuickLoaderSourceTweakID"];
+            [d removeObjectForKey:@"QuickLoaderSavedJS"];
+            [d setBool:NO forKey:kSettingsQuickLoaderEnabled];
+            [d synchronize];
+            self.qlScriptName = nil;
+            self.qlRawScript = nil;
+            self.qlParams = nil;
+            self.qlValues = nil;
+            [self.tableView reloadData];
+            [[NSNotificationCenter defaultCenter] postNotificationName:PackageQueueDidChangeNotification object:nil];
+            return;
+        } else if ([action isEqualToString:@"quickloader-apply-dynamic"]) {
+            [self applyQuickLoaderScript];
+            NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+            [d setBool:YES forKey:kSettingsQuickLoaderEnabled];
+            settings_mark_tweak_needs_apply(kSettingsQuickLoaderEnabled);
+            [d synchronize];
+            [self.tableView reloadData];
+            [[NSNotificationCenter defaultCenter] postNotificationName:PackageQueueDidChangeNotification object:nil];
             return;
         }
         return;

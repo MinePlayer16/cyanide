@@ -8,6 +8,8 @@
 #import "remote_objc.h"
 #import "../TaskRop/RemoteCall.h"
 #import "../LogTextView.h"
+#import "../utils/file.h"
+#import "../SettingsViewController.h"
 #import <CommonCrypto/CommonDigest.h>
 #import <math.h>
 #import <pthread.h>
@@ -19,6 +21,8 @@ static const NSUInteger kRepoTweaksMaxScriptBytes = 512 * 1024;
 static NSString * const kRepoTweaksDefaultRepoURL = @"https://zeroxjf.github.io/cyanide-repotweaks.json";
 static NSString * const kRepoTweaksDefaultReposSeedVersionKey = @"RepoTweaksDefaultReposSeedVersion";
 static NSString * const kRepoTweaksDefaultReposSeedVersion = @"3";
+static NSString * const kRepoTweaksHideHomeBarMaterialKitAssets =
+    @"/System/Library/PrivateFrameworks/MaterialKit.framework/Assets.car";
 
 static NSMutableDictionary<NSString *, JSContext *> *g_repo_contexts = nil;
 static NSMutableDictionary<NSString *, NSMutableDictionary<NSNumber *, id> *> *g_repo_timers_registry = nil;
@@ -249,6 +253,51 @@ static BOOL repotweaks_content_type_matches(NSHTTPURLResponse *response, NSArray
         if ([lower hasPrefix:prefix]) return YES;
     }
     return NO;
+}
+
+static NSString *repotweaks_cache_busted_url_string(NSString *urlString) {
+    if (![urlString isKindOfClass:NSString.class] || urlString.length == 0) return @"";
+    NSURLComponents *components = [NSURLComponents componentsWithString:urlString];
+    if (!components || ![components.scheme.lowercaseString isEqualToString:@"https"] || components.host.length == 0) {
+        return urlString;
+    }
+
+    NSMutableArray<NSURLQueryItem *> *items = [[components.queryItems ?: @[] mutableCopy] ?: [NSMutableArray array] mutableCopy];
+    for (NSInteger i = (NSInteger)items.count - 1; i >= 0; i--) {
+        if ([items[(NSUInteger)i].name isEqualToString:@"_cyanideBust"]) {
+            [items removeObjectAtIndex:(NSUInteger)i];
+        }
+    }
+
+    NSString *stamp = [NSString stringWithFormat:@"%.0f-%@",
+                       NSDate.date.timeIntervalSince1970 * 1000.0,
+                       NSUUID.UUID.UUIDString];
+    [items addObject:[NSURLQueryItem queryItemWithName:@"_cyanideBust" value:stamp]];
+    components.queryItems = items;
+    return components.URL.absoluteString ?: urlString;
+}
+
+static NSMutableURLRequest *repotweaks_uncached_request(NSString *urlString, NSTimeInterval timeout) {
+    NSString *busted = repotweaks_cache_busted_url_string(urlString);
+    NSURL *url = [NSURL URLWithString:busted];
+    if (!url) return nil;
+
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url
+                                                           cachePolicy:NSURLRequestReloadIgnoringLocalAndRemoteCacheData
+                                                       timeoutInterval:timeout > 0 ? timeout : 20.0];
+    [request setValue:@"no-cache, no-store, max-age=0, must-revalidate" forHTTPHeaderField:@"Cache-Control"];
+    [request setValue:@"no-cache" forHTTPHeaderField:@"Pragma"];
+    [request setValue:@"0" forHTTPHeaderField:@"Expires"];
+    return request;
+}
+
+static NSURLSession *repotweaks_uncached_session(NSTimeInterval timeout) {
+    NSURLSessionConfiguration *cfg = NSURLSessionConfiguration.ephemeralSessionConfiguration;
+    cfg.URLCache = nil;
+    cfg.requestCachePolicy = NSURLRequestReloadIgnoringLocalAndRemoteCacheData;
+    cfg.timeoutIntervalForRequest = timeout > 0 ? timeout : 20.0;
+    cfg.timeoutIntervalForResource = timeout > 0 ? timeout : 20.0;
+    return [NSURLSession sessionWithConfiguration:cfg];
 }
 
 static NSDictionary *repotweaks_sanitized_tweak(id raw, NSString **errorMessage) {
@@ -491,6 +540,26 @@ bool repotweaks_run_isolated_js(NSString *tweakID, NSString *tweakName, NSString
             log_user("[RepoTweaks][%s] %s\n", safeName.UTF8String, [msg UTF8String]);
         };
 
+        context[@"dz_zero_system_file_page"] = ^NSNumber*(NSString *path, JSValue *offsetValue) {
+            if (!repotweaks_generation_is_active(runGeneration)) return @(NO);
+            if (![path isKindOfClass:NSString.class] || path.length == 0) {
+                log_user("[RepoTweaks][%s] dz_zero_system_file_page missing path.\n", safeName.UTF8String);
+                return @(NO);
+            }
+            uint64_t offset = offsetValue ? repo_js_to_uint64(offsetValue) : 0;
+            log_user("[RepoTweaks][%s] Stable page-zero request: %s offset=%llu\n",
+                     safeName.UTF8String,
+                     path.UTF8String,
+                     (unsigned long long)offset);
+            int rc = zero_system_file_page(path.UTF8String, (off_t)offset);
+            if (rc == 0 &&
+                offset == 0 &&
+                [path isEqualToString:kRepoTweaksHideHomeBarMaterialKitAssets]) {
+                settings_note_hide_home_bar_respring_pending();
+            }
+            return @(rc == 0);
+        };
+
         context[@"r_pref_num"] = ^NSNumber*(NSString *key) {
             if (!repotweaks_generation_is_active(runGeneration)) return @(0);
             return @([repotweaks_pref_string(safeID, key) doubleValue]);
@@ -678,11 +747,15 @@ void repotweaks_refresh_repo(NSString *repoURL, void (^completion)(BOOL success,
         return;
     }
 
-    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:repoURL]];
-    request.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
-    request.timeoutInterval = 20;
+    NSMutableURLRequest *request = repotweaks_uncached_request(repoURL, 20.0);
+    if (!request) {
+        finish(NO, @"Repository URL is invalid.");
+        return;
+    }
 
-    [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+    NSURLSession *session = repotweaks_uncached_session(20.0);
+    [[session dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        [session finishTasksAndInvalidate];
         if (error || !data) {
             finish(NO, error.localizedDescription ?: @"Download failed.");
             return;
@@ -749,11 +822,15 @@ void repotweaks_download_script(NSString *repoURL, NSString *tweakId, NSString *
         return;
     }
 
-    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:scriptURL]];
-    request.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
-    request.timeoutInterval = 20;
+    NSMutableURLRequest *request = repotweaks_uncached_request(scriptURL, 20.0);
+    if (!request) {
+        finish(NO);
+        return;
+    }
 
-    [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+    NSURLSession *session = repotweaks_uncached_session(20.0);
+    [[session dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        [session finishTasksAndInvalidate];
         if (error || !data) {
             finish(NO);
             return;
@@ -786,6 +863,35 @@ void repotweaks_download_script(NSString *repoURL, NSString *tweakId, NSString *
         [d synchronize];
         finish(YES);
     }] resume];
+}
+
+BOOL repotweaks_download_script_sync(NSString *repoURL,
+                                     NSString *tweakId,
+                                     NSString *scriptURL,
+                                     NSTimeInterval timeout,
+                                     NSString **message) {
+    if (message) *message = nil;
+    if (![tweakId isKindOfClass:NSString.class] || tweakId.length == 0 ||
+        !repotweaks_is_https_url(scriptURL)) {
+        if (message) *message = @"Invalid script URL.";
+        return NO;
+    }
+
+    __block BOOL ok = NO;
+    dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+    repotweaks_download_script(repoURL, tweakId, scriptURL, ^(BOOL success) {
+        ok = success;
+        dispatch_semaphore_signal(sema);
+    });
+
+    NSTimeInterval boundedTimeout = timeout > 0 ? timeout : 25.0;
+    long wait = dispatch_semaphore_wait(sema, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(boundedTimeout * NSEC_PER_SEC)));
+    if (wait != 0) {
+        if (message) *message = @"Timed out downloading latest script.";
+        return NO;
+    }
+    if (!ok && message) *message = @"Failed to download latest script.";
+    return ok;
 }
 
 bool repotweaks_stop_in_session(void) {
